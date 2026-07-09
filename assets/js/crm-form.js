@@ -1,26 +1,19 @@
-// Configurazione CRM: sostituire con l'endpoint e il token reali forniti dal CRM
-const CRM_API_URL = 'URL_API_DEL_TUO_CRM';
-const CRM_API_TOKEN = 'IL_TUO_TOKEN_API_DI_SICUREZZA';
-
-// Funzione per inviare i dati del form al CRM di TL Comunicazioni
+// Funzione per inviare i dati del form al proxy server, che li inoltra al CRM
+// (l'URL e il token del CRM restano solo lato server, mai esposti al browser)
 async function inviaDatiAlCRM(event) {
     event.preventDefault();
 
-    // Raccoglie i dati inseriti dall'utente nel modulo del sito
     const datiContatto = {
         nome: document.getElementById('nome').value,
         email: document.getElementById('email').value,
-        telefono: document.getElementById('telefono').value,
-        fonte: "Academy Blog - Analisi Bolletta",
-        stato_lead: "Nuovo da Gestire"
+        telefono: document.getElementById('telefono').value
     };
 
     try {
-        const response = await fetch(CRM_API_URL, {
+        const response = await fetch('/api/leads', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${CRM_API_TOKEN}`
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify(datiContatto)
         });
