@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { addMessage, all, getBusiness, getContact, HOT_SCORE, one, run, upsertContact, type Business, type Contact } from "../db.js";
 import { dueContacts, runFollowups } from "../followup.js";
+import { PUBLIC_SIGNUP } from "../config.js";
 import { billingSummary, createCheckout, createPortal, PLAN, startTrial } from "../billing.js";
 import { checkPassword, createSession, destroySession, hashPassword, requireAuth, type AuthedRequest } from "../auth.js";
 import { askManager, executeProposal, generateProposals } from "../agents/manager.js";
@@ -43,7 +44,18 @@ const DEFAULT_HOURS = JSON.stringify({
 
 // ---------- Accesso ----------
 
+const hasUsers = () => !!one("SELECT 1 FROM users LIMIT 1");
+
+api.get("/auth/status", (_req, res) => {
+  res.json({ signup_open: PUBLIC_SIGNUP || !hasUsers(), first_setup: !hasUsers() });
+});
+
 api.post("/auth/register", (req, res) => {
+  // Uso esclusivo TL: si può registrare solo il primo account (configurazione iniziale).
+  if (!PUBLIC_SIGNUP && hasUsers()) {
+    res.status(403).json({ error: "Registrazione chiusa. Chiedi a un amministratore TL di crearti un accesso." });
+    return;
+  }
   const body = z
     .object({
       email: z.string().email(),
@@ -425,4 +437,41 @@ api.post("/billing/checkout", async (req, res) => {
 api.post("/billing/portal", async (req, res) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   res.json({ url: await createPortal(getBusiness(bid(req)), origin) });
+});
+
+// Team: colleghi TL con accesso alla stessa attività
+api.get("/team", (req, res) => {
+  res.json({
+    me: (req as AuthedRequest).userId,
+    users: all("SELECT id, email, name, created_at FROM users WHERE business_id = ? ORDER BY id", bid(req)),
+  });
+});
+api.post("/team", (req, res) => {
+  const f = z.object({ email: z.string().email(), name: z.string().default(""), password: z.string().min(8) }).parse(req.body);
+  if (one("SELECT 1 FROM users WHERE email = ?", f.email.toLowerCase())) {
+    res.status(409).json({ error: "Esiste già un utente con questa email." });
+    return;
+  }
+  run("INSERT INTO users (email, password_hash, name, business_id) VALUES (?, ?, ?, ?)", f.email.toLowerCase(), hashPassword(f.password), f.name, bid(req));
+  res.json({ ok: true });
+});
+api.delete("/team/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (id === (req as unknown as AuthedRequest).userId) {
+    res.status(400).json({ error: "Non puoi rimuovere te stesso." });
+    return;
+  }
+  run("DELETE FROM sessions WHERE user_id = ? AND user_id IN (SELECT id FROM users WHERE business_id = ?)", id, bid(req));
+  run("DELETE FROM users WHERE id = ? AND business_id = ?", id, bid(req));
+  res.json({ ok: true });
+});
+api.put("/me/password", (req, res) => {
+  const f = z.object({ current: z.string(), password: z.string().min(8) }).parse(req.body);
+  const u = one<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = ?", (req as AuthedRequest).userId)!;
+  if (!checkPassword(f.current, u.password_hash)) {
+    res.status(400).json({ error: "La password attuale non è corretta." });
+    return;
+  }
+  run("UPDATE users SET password_hash = ? WHERE id = ?", hashPassword(f.password), (req as AuthedRequest).userId);
+  res.json({ ok: true });
 });

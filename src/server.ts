@@ -12,6 +12,7 @@ import { nowLocal } from "./schedule.js";
 import { runFollowups } from "./followup.js";
 import { canUseAI, monthlyRefill, OutOfCreditsError, stripeWebhook } from "./billing.js";
 import { getBusiness } from "./db.js";
+import { PUBLIC_SITE } from "./config.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -40,6 +41,8 @@ app.post("/webhooks/stripe", stripeWebhook);
 app.get("/webhooks/whatsapp", verifyWebhook);
 app.post("/webhooks/whatsapp", receiveWebhook);
 app.use("/api", api);
+// Uso esclusivo TL: la pagina di vendita è spenta e la radice porta all'app.
+if (!PUBLIC_SITE) app.get(["/", "/index.html"], (_req, res) => res.redirect("/app"));
 app.use(express.static("public", { extensions: ["html"] }));
 app.get(/^\/app(\/.*)?$/, (_req, res) => res.sendFile("app/index.html", { root: "public" }));
 

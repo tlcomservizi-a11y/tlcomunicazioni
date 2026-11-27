@@ -91,15 +91,22 @@ function shell(active, title, body, { composer = false, badge = 0 } = {}) {
 }
 
 // ---------- accesso ----------
-function viewAuth(mode = "accedi") {
+async function viewAuth(mode = "accedi") {
+  let status = { signup_open: false, first_setup: false };
+  try {
+    status = await api("/auth/status");
+  } catch {}
+  if (status.first_setup) mode = "registrati";
+  if (!status.signup_open) mode = "accedi";
   const reg = mode === "registrati";
+  const setup = status.first_setup;
   root.innerHTML = `
   <div class="auth">
     <div class="logo">TL</div>
-    <h2>${reg ? "Attiva i tuoi agenti TL" : "Bentornato"}</h2>
-    <p class="sub">${reg ? "Due minuti: crea l'account, poi raccontaci la tua attività." : "Accedi per vedere cosa hanno fatto i tuoi agenti."}</p>
+    <h2>${setup ? "Configura TL Agenti" : reg ? "Attiva i tuoi agenti TL" : "Bentornato"}</h2>
+    <p class="sub">${setup ? "Primo avvio: crea l'account amministratore di TL. Poi potrai aggiungere i colleghi da Altro → Team." : reg ? "Due minuti: crea l'account, poi raccontaci la tua attività." : "Accedi per vedere cosa hanno fatto i tuoi agenti."}</p>
     <form id="f" class="card">
-      ${reg ? `<label>Nome dell'attività</label><input type="text" name="business_name" required placeholder="Es. Centro estetico Aurora" />
+      ${reg ? `<label>Nome dell'attività</label><input type="text" name="business_name" required value="${setup ? "TL Comunicazioni" : ""}" placeholder="Es. Centro estetico Aurora" />
       <label>Settore</label><input type="text" name="sector" placeholder="Es. estetica, idraulico, pizzeria" />
       <label>Città</label><input type="text" name="city" placeholder="Es. Milano" />
       <label>Il tuo nome</label><input type="text" name="name" />` : ""}
@@ -109,7 +116,7 @@ function viewAuth(mode = "accedi") {
       <button class="btn block" style="margin-top:16px">${reg ? "Crea account" : "Accedi"}</button>
     </form>
     <p class="sub" style="text-align:center;margin-top:14px">${
-      reg ? `Hai già un account? <a href="#/accedi">Accedi</a>` : `Non hai un account? <a href="#/registrati">Registrati</a>`
+      setup ? "" : reg ? `Hai già un account? <a href="#/accedi">Accedi</a>` : status.signup_open ? `Non hai un account? <a href="#/registrati">Registrati</a>` : "Accesso riservato al team TL Comunicazioni."
     }</p>
   </div>`;
   document.getElementById("f").onsubmit = async (e) => {
@@ -506,7 +513,8 @@ function viewAltro() {
     ["agenti", "Il tuo team di agenti", "Chi fa cosa"],
     ["prova", "Prova l'assistente", "Scrivi come se fossi un cliente"],
     ["impostazioni", "La tua attività e i canali", "Servizi, prezzi, orari, WhatsApp, widget del sito"],
-    ["piano", "Piano e crediti", "Abbonamento, crediti IA rimasti, ricariche"],
+    ...(me.billing?.enabled ? [["piano", "Piano e crediti", "Abbonamento, crediti IA rimasti, ricariche"]] : []),
+    ["team", "Team TL", "Colleghi con accesso, cambio password"],
   ];
   const main = shell(
     "altro",
@@ -689,6 +697,64 @@ function viewProva() {
       send();
     }
   };
+}
+
+// ---------- Team ----------
+async function viewTeam() {
+  const { users, me: myId } = await api("/team");
+  const main = shell(
+    "altro",
+    "Team TL",
+    `<div class="card"><ul class="list">${users
+      .map(
+        (u) => `<li><div class="avatar">${esc(initials(u.name || u.email))}</div><div class="grow"><div class="title">${esc(u.name || u.email)}${u.id === myId ? " (tu)" : ""}</div><div class="meta">${esc(u.email)}</div></div>${
+          u.id === myId ? "" : `<button class="btn small ghost" data-del="${u.id}">Rimuovi</button>`
+        }</li>`,
+      )
+      .join("")}</ul></div>
+    <form class="card" id="add">
+      <b>Aggiungi un collega</b>
+      <label>Nome</label><input type="text" name="name" />
+      <label>Email</label><input type="email" name="email" required />
+      <label>Password iniziale (almeno 8 caratteri)</label><input type="text" name="password" required minlength="8" autocomplete="off" />
+      <p class="hint">Comunicagliela di persona: potrà cambiarla da qui.</p>
+      <button class="btn" style="margin-top:8px">Aggiungi</button>
+    </form>
+    <form class="card" id="pw">
+      <b>Cambia la tua password</b>
+      <label>Password attuale</label><input type="password" name="current" required autocomplete="current-password" />
+      <label>Nuova password</label><input type="password" name="password" required minlength="8" autocomplete="new-password" />
+      <button class="btn secondary" style="margin-top:12px">Cambia password</button>
+    </form>`,
+  );
+  main.querySelector("#add").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api("/team", { body: Object.fromEntries(new FormData(e.target)) });
+      toast("Collega aggiunto");
+      viewTeam();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  main.querySelector("#pw").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api("/me/password", { method: "PUT", body: Object.fromEntries(new FormData(e.target)) });
+      toast("Password cambiata");
+      e.target.reset();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  main.querySelectorAll("[data-del]").forEach(
+    (b) =>
+      (b.onclick = async () => {
+        if (!confirm("Rimuovere l'accesso a questo collega?")) return;
+        await api(`/team/${b.dataset.del}`, { method: "DELETE" });
+        viewTeam();
+      }),
+  );
 }
 
 // ---------- Piano e crediti ----------
@@ -910,6 +976,7 @@ async function route() {
       case "pubblicita": return await viewPubblicita();
       case "agenti": return viewAgenti();
       case "prova": return viewProva();
+      case "team": return await viewTeam();
       case "piano": return await viewPiano(new URLSearchParams(query).get("esito"));
       case "impostazioni": return viewImpostazioni(new URLSearchParams(query).has("benvenuto"));
       default: return await viewOggi();

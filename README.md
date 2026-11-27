@@ -1,5 +1,7 @@
 # TL Agenti
 
+> **Uso esclusivo di TL Comunicazioni.** Il sistema lavora solo per TL: non ci sono registrazioni pubbliche, pagamenti o pagina di vendita. Al primo avvio si crea l'account amministratore, e i colleghi si aggiungono da **Altro → Team TL**. Le funzioni per venderlo ad altre attività restano nel codice, spente: `PUBLIC_SIGNUP=1` riapre le registrazioni, `PUBLIC_SITE=1` mostra la landing su `/` e le chiavi Stripe attivano piani e crediti.
+
 Un team di agenti IA per le piccole attività: rispondono ai clienti su WhatsApp e sul sito, fissano gli appuntamenti, tengono il CRM, preparano le pubblicità e propongono al titolare cosa fare ogni giorno. Il titolare li comanda dal telefono, anche a voce.
 
 ## Cosa c'è
@@ -31,7 +33,7 @@ cp .env.example .env     # inserisci ANTHROPIC_API_KEY
 npm start          # oppure: npm run dev (si riavvia quando cambi il codice)
 ```
 
-Poi apri `http://localhost:3000`, registra un'attività, compila **Altro → La tua attività** e prova l'assistente da **Altro → Prova l'assistente**.
+Poi apri `http://localhost:3000`. Al primo avvio crei l'account amministratore di TL Comunicazioni, poi compila **Altro → La tua attività** e prova l'assistente da **Altro → Prova l'assistente**.
 
 ## Collegare WhatsApp
 
