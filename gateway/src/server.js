@@ -12,7 +12,7 @@ import pino from "pino";
 import makeWASocket, { Browsers, DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState } from "baileys";
 import { toPayload, makeLimiter, typingDelay, digits } from "./core.js";
 
-const VERSIONE = "3";
+const VERSIONE = "4";
 const env = (k, d = "") => process.env[k] || d;
 const PORT = Number(env("PORT", "3100"));
 const PANEL_PASSWORD = env("PANEL_PASSWORD");
@@ -23,7 +23,7 @@ const AUTH_DIR = path.resolve(env("AUTH_DIR", "data/sessione"));
 if (!PANEL_PASSWORD || PANEL_PASSWORD.length < 10) throw Error("Imposta PANEL_PASSWORD (almeno 10 caratteri)");
 if (!GATEWAY_SECRET) throw Error("Imposta GATEWAY_SECRET (lo stesso valore di TL_GATEWAY_SECRET in Partner Hub)");
 
-const logger = pino({ level: env("LOG_LEVEL", "warn") });
+const logger = pino({ level: env("LOG_LEVEL", "fatal") }); // la finestra mostra solo le righe del ponte
 const state = { status: "avvio", qr: "", me: "", since: new Date().toISOString(), lastError: "", handled: 0, replied: 0, received: 0, ignored: 0, errors: 0, lastEvent: "" };
 const ownSentIds = new Set();
 const jidByPhone = new Map(); // per rispondere sulla stessa chat (anche quelle con identificativo @lid)
@@ -59,6 +59,11 @@ async function reply(to, text) {
 const hhmm = () => new Date().toLocaleTimeString("it-IT");
 async function onMessage(msg) {
   state.received++;
+  // Chat con numero nascosto (@lid): si recupera il numero vero dalla mappa di WhatsApp, se disponibile.
+  const k = msg.key || {};
+  if (/@lid$/.test(k.remoteJid || "") && !k.remoteJidAlt && !k.senderPn) {
+    try { const pn = await sock.signalRepository?.lidMapping?.getPNForLID(k.remoteJid); if (pn) k.remoteJidAlt = pn; } catch {}
+  }
   const payload = toPayload(msg, ownSentIds);
   if (!payload) { state.ignored++; console.log(`[${hhmm()}] messaggio ignorato (gruppo, stato, sistema o risposta del ponte)`); return; }
   const v = payload.entry[0].changes[0].value;
@@ -75,7 +80,14 @@ async function onMessage(msg) {
 }
 
 async function start() {
+  // Le sessioni create con la libreria precedente non decifrano i messaggi: al primo avvio della v4 si ricomincia con un nuovo QR.
+  const marker = path.join(AUTH_DIR, "versione-libreria.txt");
+  if (fs.existsSync(path.join(AUTH_DIR, "creds.json")) && (!fs.existsSync(marker) || fs.readFileSync(marker, "utf8").trim() !== "7")) {
+    console.log("Sessione della versione precedente: va ricollegato WhatsApp con un nuovo QR.");
+    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+  }
   fs.mkdirSync(AUTH_DIR, { recursive: true });
+  fs.writeFileSync(marker, "7");
   const { state: auth, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: undefined }));
   sock = makeWASocket({
@@ -87,7 +99,7 @@ async function start() {
   });
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("connection.update", async (u) => {
-    if (u.qr) { state.status = "da_collegare"; state.qr = await QRCode.toDataURL(u.qr, { margin: 1, width: 320 }); }
+    if (u.qr) { if (state.status !== "da_collegare") console.log(`[${hhmm()}] QR pronto: apri http://localhost:${PORT} e inquadralo dal telefono`); state.status = "da_collegare"; state.qr = await QRCode.toDataURL(u.qr, { margin: 1, width: 320 }); }
     if (u.connection === "open") {
       retry = 0;
       Object.assign(state, { status: "collegato", qr: "", me: digits(String(sock.user?.id || "").split(":")[0]), since: new Date().toISOString(), lastError: "" });
