@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { addMessage, all, getBusiness, getContact, one, run, upsertContact, type Business, type Contact } from "../db.js";
+import { addMessage, all, getBusiness, getContact, HOT_SCORE, one, run, upsertContact, type Business, type Contact } from "../db.js";
+import { dueContacts, runFollowups } from "../followup.js";
 import { checkPassword, createSession, destroySession, hashPassword, requireAuth, type AuthedRequest } from "../auth.js";
 import { askManager, executeProposal, generateProposals } from "../agents/manager.js";
 import { replyToCustomer } from "../agents/sales.js";
@@ -171,6 +172,11 @@ api.put("/business", (req, res) => {
       wa_phone_number_id: z.string(),
       wa_token: z.string().optional(),
       ai_enabled: z.boolean(),
+      qualification_rules: z.string(),
+      followup_enabled: z.boolean(),
+      followup_after_hours: z.coerce.number().int().min(1).max(720),
+      followup_max: z.coerce.number().int().min(0).max(5),
+      wa_followup_template: z.string(),
     })
     .partial()
     .parse(req.body);
@@ -181,12 +187,15 @@ api.put("/business", (req, res) => {
     hours: f.hours ? JSON.stringify(f.hours) : cur.hours,
     ai_enabled: f.ai_enabled === undefined ? cur.ai_enabled : Number(f.ai_enabled),
     wa_token: f.wa_token ? f.wa_token : cur.wa_token,
+    followup_enabled: f.followup_enabled === undefined ? cur.followup_enabled : Number(f.followup_enabled),
   };
   run(
     `UPDATE businesses SET name=?, sector=?, city=?, description=?, services=?, faq=?, tone=?, slot_minutes=?, hours=?,
-     owner_phone=?, wa_phone_number_id=?, wa_token=?, ai_enabled=? WHERE id=?`,
+     owner_phone=?, wa_phone_number_id=?, wa_token=?, ai_enabled=?, qualification_rules=?, followup_enabled=?,
+     followup_after_hours=?, followup_max=?, wa_followup_template=? WHERE id=?`,
     next.name, next.sector, next.city, next.description, next.services, next.faq, next.tone, next.slot_minutes, next.hours,
-    next.owner_phone, next.wa_phone_number_id, next.wa_token, next.ai_enabled, cur.id,
+    next.owner_phone, next.wa_phone_number_id, next.wa_token, next.ai_enabled, next.qualification_rules, next.followup_enabled,
+    next.followup_after_hours, next.followup_max, next.wa_followup_template, cur.id,
   );
   res.json({ business: publicBusiness(getBusiness(cur.id)) });
 });
@@ -201,9 +210,21 @@ api.get("/dashboard", (req, res) => {
     risposte_7g: count("SELECT count(*) n FROM messages WHERE business_id = ? AND author = 'agente' AND created_at >= datetime('now', '-7 days')"),
     appuntamenti_futuri: count("SELECT count(*) n FROM appointments WHERE business_id = ? AND status = 'confermato' AND starts_at >= ?", nowLocal()),
     chat_in_attesa: count("SELECT count(*) n FROM contacts WHERE business_id = ? AND ai_paused = 1"),
+    contatti_caldi: count("SELECT count(*) n FROM contacts WHERE business_id = ? AND score >= ? AND status NOT IN ('cliente','perso')", HOT_SCORE),
+    followup_7g: count("SELECT count(*) n FROM messages WHERE business_id = ? AND kind = 'followup' AND created_at >= datetime('now', '-7 days')"),
+    risposte_dopo_followup_7g: count(
+      `SELECT count(DISTINCT f.contact_id) n FROM messages f WHERE f.business_id = ? AND f.kind = 'followup' AND f.created_at >= datetime('now', '-7 days')
+       AND EXISTS (SELECT 1 FROM messages r WHERE r.contact_id = f.contact_id AND r.author = 'cliente' AND r.id > f.id)`,
+    ),
+    caldi: all(
+      `SELECT id, name, external_id, channel, score, qualification FROM contacts
+       WHERE business_id = ? AND score >= ? AND status NOT IN ('cliente','perso') ORDER BY score DESC, last_message_at DESC LIMIT 5`,
+      id,
+      HOT_SCORE,
+    ),
     da_leggere: count("SELECT coalesce(sum(unread),0) n FROM contacts WHERE business_id = ?"),
     ultimi_contatti: all(
-      "SELECT id, name, channel, external_id, status, last_message_at FROM contacts WHERE business_id = ? ORDER BY last_message_at DESC LIMIT 5",
+      "SELECT id, name, channel, external_id, status, score, last_message_at FROM contacts WHERE business_id = ? ORDER BY last_message_at DESC LIMIT 5",
       id,
     ),
     prossimi_appuntamenti: all(
@@ -223,13 +244,14 @@ api.get("/dashboard", (req, res) => {
 api.get("/contacts", (req, res) => {
   const q = `%${String(req.query.q ?? "")}%`;
   const status = req.query.status ? String(req.query.status) : null;
+  const minScore = req.query.hot ? HOT_SCORE : null;
   res.json({
     contacts: all(
       `SELECT c.*, (SELECT text FROM messages m WHERE m.contact_id = c.id ORDER BY id DESC LIMIT 1) last_text
-       FROM contacts c WHERE business_id = ? AND (? IS NULL OR status = ?)
+       FROM contacts c WHERE business_id = ? AND (? IS NULL OR status = ?) AND (? IS NULL OR score >= ?)
        AND (name LIKE ? OR phone LIKE ? OR external_id LIKE ? OR interest LIKE ?)
-       ORDER BY last_message_at DESC LIMIT 200`,
-      bid(req), status, status, q, q, q, q,
+       ORDER BY ${minScore ? "score DESC," : ""} last_message_at DESC LIMIT 200`,
+      bid(req), status, status, minScore, minScore, q, q, q, q,
     ),
   });
 });
@@ -269,7 +291,7 @@ api.get("/contacts/:id/messages", (req, res) => {
     return;
   }
   run("UPDATE contacts SET unread = 0 WHERE id = ?", c.id);
-  res.json({ contact: c, messages: all("SELECT id, author, text, created_at FROM messages WHERE contact_id = ? ORDER BY id", c.id) });
+  res.json({ contact: c, messages: all("SELECT id, author, text, kind, created_at FROM messages WHERE contact_id = ? ORDER BY id", c.id) });
 });
 
 api.post("/contacts/:id/messages", async (req, res) => {
@@ -357,4 +379,20 @@ api.post("/assistant", async (req, res) => {
 api.delete("/assistant", (req, res) => {
   run("DELETE FROM owner_chat WHERE business_id = ?", bid(req));
   res.json({ ok: true });
+});
+
+// Follow-up automatici
+api.get("/followups", (req, res) => {
+  const b = getBusiness(bid(req));
+  res.json({
+    in_coda: dueContacts(b).map((c) => ({ id: c.id, name: c.name || c.external_id, tentativo: c.followup_count + 1, score: c.score })),
+    inviati: all(
+      `SELECT m.id, m.text, m.created_at, c.id contact_id, c.name, c.external_id FROM messages m JOIN contacts c ON c.id = m.contact_id
+       WHERE m.business_id = ? AND m.kind = 'followup' ORDER BY m.id DESC LIMIT 20`,
+      b.id,
+    ),
+  });
+});
+api.post("/followups/run", async (req, res) => {
+  res.json(await runFollowups(bid(req), true));
 });

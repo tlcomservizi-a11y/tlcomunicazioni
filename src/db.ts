@@ -121,6 +121,29 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 );
 `);
 
+// Migrazioni: colonne aggiunte dopo la prima versione (idempotenti).
+function addColumn(table: string, column: string, def: string) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+}
+// Prequalifica
+addColumn("businesses", "qualification_rules", "TEXT DEFAULT ''");
+addColumn("contacts", "score", "INTEGER");                       // 0-100, NULL = non ancora valutato
+addColumn("contacts", "qualification", "TEXT DEFAULT ''");       // motivazione breve
+// Follow-up automatici
+addColumn("businesses", "followup_enabled", "INTEGER DEFAULT 0");
+addColumn("businesses", "followup_after_hours", "INTEGER DEFAULT 20");
+addColumn("businesses", "followup_max", "INTEGER DEFAULT 2");
+addColumn("businesses", "wa_followup_template", "TEXT DEFAULT ''"); // modello approvato da Meta, per fuori finestra 24h
+addColumn("contacts", "followup_count", "INTEGER DEFAULT 0");
+addColumn("contacts", "last_customer_at", "TEXT");
+addColumn("messages", "kind", "TEXT DEFAULT ''");                // '' | followup
+db.exec(`UPDATE contacts SET last_customer_at =
+  (SELECT max(created_at) FROM messages m WHERE m.contact_id = contacts.id AND m.author = 'cliente')
+  WHERE last_customer_at IS NULL`);
+
+export const HOT_SCORE = 70;
+
 export type Row = Record<string, any>;
 
 export function one<T = Row>(sql: string, ...params: any[]): T | undefined {
@@ -149,6 +172,11 @@ export interface Business {
   wa_phone_number_id: string;
   wa_token: string;
   ai_enabled: number;
+  qualification_rules: string;
+  followup_enabled: number;
+  followup_after_hours: number;
+  followup_max: number;
+  wa_followup_template: string;
 }
 
 export interface Contact {
@@ -166,6 +194,10 @@ export interface Contact {
   unread: number;
   created_at: string;
   last_message_at: string;
+  score: number | null;
+  qualification: string;
+  followup_count: number;
+  last_customer_at: string | null;
 }
 
 export function getBusiness(id: number): Business {
@@ -209,11 +241,21 @@ export function upsertContact(
   return getContact(businessId, Number(r.lastInsertRowid))!;
 }
 
-export function addMessage(businessId: number, contactId: number, author: "cliente" | "agente" | "titolare", text: string) {
-  run("INSERT INTO messages (business_id, contact_id, author, text) VALUES (?, ?, ?, ?)", businessId, contactId, author, text);
-  run(
-    `UPDATE contacts SET last_message_at = datetime('now'), unread = unread + ? WHERE id = ?`,
-    author === "cliente" ? 1 : 0,
-    contactId,
-  );
+export function addMessage(
+  businessId: number,
+  contactId: number,
+  author: "cliente" | "agente" | "titolare",
+  text: string,
+  kind: "" | "followup" = "",
+) {
+  run("INSERT INTO messages (business_id, contact_id, author, text, kind) VALUES (?, ?, ?, ?, ?)", businessId, contactId, author, text, kind);
+  if (author === "cliente") {
+    // Il cliente ha risposto: la sequenza di follow-up riparte da zero.
+    run(
+      `UPDATE contacts SET last_message_at = datetime('now'), last_customer_at = datetime('now'), unread = unread + 1, followup_count = 0 WHERE id = ?`,
+      contactId,
+    );
+  } else {
+    run(`UPDATE contacts SET last_message_at = datetime('now') WHERE id = ?`, contactId);
+  }
 }

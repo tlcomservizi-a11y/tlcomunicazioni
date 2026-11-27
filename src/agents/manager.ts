@@ -2,7 +2,7 @@
 // e prepara proposte da approvare con un tocco.
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
-import { all, getBusiness, getContact, one, run, type Business, type Contact } from "../db.js";
+import { all, getBusiness, getContact, HOT_SCORE, one, run, type Business, type Contact } from "../db.js";
 import { bookAppointment, cancelAppointment, describeNow, freeSlots, nowLocal } from "../schedule.js";
 import { sendToContact } from "../channels/send.js";
 import { runAgent, toApiMessages } from "./client.js";
@@ -21,6 +21,8 @@ Come lavori:
 - Le azioni verso i clienti (send_message_to_contact) falle solo se il titolare l'ha chiesto esplicitamente o ha detto sì a una tua proposta in questa conversazione. Se è una tua idea, chiedi prima: "Lo faccio?".
 - Quando ti chiedono consigli o "cosa faccio oggi", leggi i dati e crea proposte concrete con create_proposals: ogni proposta deve essere un'azione eseguibile con un tocco.
 - Scrivi testo semplice, adatto al telefono: niente tabelle, al massimo un elenco breve.
+- Ogni contatto ha una valutazione 0-100 data dall'agente Vendite secondo le regole di qualifica (${HOT_SCORE}+ = caldo). Quando il titolare chiede "chi devo chiamare" o simili, parti dai contatti caldi.
+- I follow-up automatici (se attivi) ricontattano da soli chi non risponde; non proporre follow-up manuali per gli stessi contatti.
 - Puoi aggiornare la scheda dell'attività (servizi, prezzi, orari, tono) con update_business_profile quando il titolare te lo dice.
 - La pubblicazione automatica su Meta/Google Ads non è ancora collegata: le inserzioni restano bozze approvate che il titolare pubblica dal suo account. Dillo se te lo chiedono.`;
 
@@ -45,6 +47,9 @@ function managerTools(b: Business) {
           appuntamenti_fissati: q("SELECT count(*) n FROM appointments WHERE business_id = ? AND status = 'confermato' AND created_at >= datetime('now', ?)"),
           contatti_per_stato: all("SELECT status, count(*) n FROM contacts WHERE business_id = ? GROUP BY status", b.id),
           chat_in_attesa_del_titolare: one<{ n: number }>("SELECT count(*) n FROM contacts WHERE business_id = ? AND ai_paused = 1", b.id)!.n,
+          contatti_caldi_aperti: one<{ n: number }>("SELECT count(*) n FROM contacts WHERE business_id = ? AND score >= ? AND status NOT IN ('cliente','perso')", b.id, HOT_SCORE)!.n,
+          followup_automatici_inviati: q("SELECT count(*) n FROM messages WHERE business_id = ? AND kind = 'followup' AND created_at >= datetime('now', ?)"),
+          followup_automatici_attivi: !!b.followup_enabled,
           bozze_pubblicita: one<{ n: number }>("SELECT count(*) n FROM ad_drafts WHERE business_id = ? AND status = 'bozza'", b.id)!.n,
         });
       },
@@ -55,19 +60,23 @@ function managerTools(b: Business) {
       inputSchema: z.object({
         status: z.enum(["nuovo", "in trattativa", "cliente", "perso"]).optional(),
         silent_for_days: z.number().int().min(1).describe("Solo contatti il cui ultimo messaggio è più vecchio di N giorni").optional(),
+        min_score: z.number().int().min(0).max(100).describe(`Solo contatti con valutazione almeno questa (caldi: ${HOT_SCORE})`).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       }),
-      run: async ({ status, silent_for_days, limit }) => {
+      run: async ({ status, silent_for_days, min_score, limit }) => {
         const rows = all<Contact>(
           `SELECT * FROM contacts WHERE business_id = ?
            AND (? IS NULL OR status = ?)
            AND (? IS NULL OR last_message_at < datetime('now', '-' || ? || ' days'))
+           AND (? IS NULL OR score >= ?)
            ORDER BY last_message_at DESC LIMIT ?`,
           b.id,
           status ?? null,
           status ?? null,
           silent_for_days ?? null,
           silent_for_days ?? null,
+          min_score ?? null,
+          min_score ?? null,
           limit ?? 30,
         );
         return JSON.stringify(
@@ -76,6 +85,8 @@ function managerTools(b: Business) {
             contatto: contactLabel(c),
             stato: c.status,
             interesse: c.interest,
+            valutazione: c.score === null ? "non valutato" : `${c.score}/100 – ${c.qualification}`,
+            followup_automatici_inviati: c.followup_count,
             ultimo_messaggio: c.last_message_at,
             assistente_in_pausa: !!c.ai_paused,
           })),
@@ -258,6 +269,7 @@ function managerTools(b: Business) {
         services: z.string().describe("Elenco completo servizi e prezzi (sostituisce il precedente)").optional(),
         faq: z.string().optional(),
         tone: z.string().optional(),
+        qualification_rules: z.string().describe("Cliente ideale e regole per valutare i contatti (sostituisce le precedenti)").optional(),
         city: z.string().optional(),
         slot_minutes: z.number().int().min(10).max(480).optional(),
         hours: z
@@ -276,11 +288,12 @@ function managerTools(b: Business) {
         const cur = getBusiness(b.id);
         const hours = f.hours ? JSON.stringify({ ...JSON.parse(cur.hours || "{}"), ...f.hours }) : cur.hours;
         run(
-          "UPDATE businesses SET description = ?, services = ?, faq = ?, tone = ?, city = ?, slot_minutes = ?, hours = ? WHERE id = ?",
+          "UPDATE businesses SET description = ?, services = ?, faq = ?, tone = ?, qualification_rules = ?, city = ?, slot_minutes = ?, hours = ? WHERE id = ?",
           f.description ?? cur.description,
           f.services ?? cur.services,
           f.faq ?? cur.faq,
           f.tone ?? cur.tone,
+          f.qualification_rules ?? cur.qualification_rules,
           f.city ?? cur.city,
           f.slot_minutes ?? cur.slot_minutes,
           hours,

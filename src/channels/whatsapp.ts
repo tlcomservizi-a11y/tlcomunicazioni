@@ -17,6 +17,30 @@ export async function sendWhatsApp(b: Business, to: string, text: string): Promi
   if (!res.ok) throw new Error(`WhatsApp ${res.status}: ${await res.text()}`);
 }
 
+/**
+ * Invia un modello di messaggio approvato da Meta (obbligatorio oltre le 24 ore dall'ultimo
+ * messaggio del cliente). Il modello deve avere un solo parametro nel corpo: il nome del cliente.
+ */
+export async function sendWhatsAppTemplate(b: Business, to: string, template: string, name: string): Promise<void> {
+  const token = b.wa_token || process.env.WHATSAPP_TOKEN;
+  if (!b.wa_phone_number_id || !token) throw new Error("WhatsApp non configurato per questa attività");
+  const res = await fetch(`${GRAPH}/${b.wa_phone_number_id}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template: {
+        name: template,
+        language: { code: "it" },
+        components: [{ type: "body", parameters: [{ type: "text", text: name || "ciao" }] }],
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`WhatsApp ${res.status}: ${await res.text()}`);
+}
+
 /** GET: verifica del webhook richiesta da Meta. */
 export function verifyWebhook(req: Request, res: Response) {
   const expected = process.env.WHATSAPP_VERIFY_TOKEN;

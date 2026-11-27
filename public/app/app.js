@@ -48,6 +48,9 @@ const fmtAppt = (s) => {
 };
 const statusPill = (s) =>
   `<span class="pill ${s === "cliente" ? "ok" : s === "in trattativa" ? "accent" : s === "perso" ? "" : "warn"}">${esc(s)}</span>`;
+const HOT = 70;
+const scorePill = (s) =>
+  s === null || s === undefined ? "" : `<span class="pill ${s >= HOT ? "hot" : s >= 40 ? "" : "cold"}" title="Valutazione del contatto">${s >= HOT ? "🔥 " : ""}${s}</span>`;
 const channelName = (c) => ({ whatsapp: "WhatsApp", sito: "Sito", test: "Prova", manuale: "Manuale" })[c] ?? c;
 
 const icons = {
@@ -147,6 +150,23 @@ async function viewOggi() {
       <div class="stat"><b>${d.chat_in_attesa}</b><span>Chat che aspettano te</span></div>
     </div>
 
+    ${
+      d.caldi.length
+        ? `<div class="section-title">Contatti caldi da non perdere</div>
+    <div class="card"><ul class="list">${d.caldi
+      .map(
+        (c) => `<li onclick="location.hash='#/chat/${c.id}'" style="cursor:pointer"><div class="avatar">${esc(initials(c.name || c.external_id))}</div>
+        <div class="grow"><div class="title">${esc(c.name || c.external_id)}</div><div class="meta">${esc(c.qualification)}</div></div>${scorePill(c.score)}</li>`,
+      )
+      .join("")}</ul></div>`
+        : ""
+    }
+    ${
+      me.business.followup_enabled
+        ? `<p class="sub" style="margin:12px 2px 0">Follow-up automatici negli ultimi 7 giorni: <b>${d.followup_7g}</b> inviati, <b>${d.risposte_dopo_followup_7g}</b> clienti hanno risposto.</p>`
+        : `<p class="sub" style="margin:12px 2px 0">I follow-up automatici sono spenti. <a href="#/impostazioni">Attivali</a> per ricontattare da soli chi non risponde.</p>`
+    }
+
     <div class="section-title">TL ti propone</div>
     <div class="card">
       <div id="proposals">${
@@ -163,7 +183,7 @@ async function viewOggi() {
         ? d.ultimi_contatti
             .map(
               (c) => `<li onclick="location.hash='#/chat/${c.id}'" style="cursor:pointer"><div class="avatar">${esc(initials(c.name || c.external_id))}</div>
-              <div class="grow"><div class="title">${esc(c.name || c.external_id)}</div><div class="meta">${channelName(c.channel)} · ${fmtTime(c.last_message_at)}</div></div>${statusPill(c.status)}</li>`,
+              <div class="grow"><div class="title">${esc(c.name || c.external_id)}</div><div class="meta">${channelName(c.channel)} · ${fmtTime(c.last_message_at)}</div></div>${scorePill(c.score)} ${statusPill(c.status)}</li>`,
             )
             .join("")
         : `<li class="empty">Ancora nessun contatto. Collega WhatsApp o il widget del sito da <a href="#/impostazioni">Impostazioni</a>.</li>`
@@ -338,7 +358,7 @@ async function viewChatList() {
             .map(
               (c) => `<li onclick="location.hash='#/chat/${c.id}'" style="cursor:pointer">
             <div class="avatar">${esc(initials(c.name || c.external_id))}</div>
-            <div class="grow"><div class="title">${esc(c.name || c.external_id)} ${c.ai_paused ? '<span class="pill warn">aspetta te</span>' : ""}</div>
+            <div class="grow"><div class="title">${esc(c.name || c.external_id)} ${scorePill(c.score)} ${c.ai_paused ? '<span class="pill warn">aspetta te</span>' : ""}</div>
             <div class="meta">${esc(c.last_text ?? "")}</div></div>
             <div style="text-align:right"><div class="meta">${fmtTime(c.last_message_at)}</div>${c.unread ? `<span class="pill accent">${c.unread}</span>` : `<span class="pill">${channelName(c.channel)}</span>`}</div>
           </li>`,
@@ -359,8 +379,9 @@ async function viewThread(id) {
     <div class="thread-head">
       <div class="avatar">${esc(initials(c.name || c.external_id))}</div>
       <div class="grow"><b>${esc(c.name || "Senza nome")}</b><div class="meta" style="color:var(--muted);font-size:13px">${channelName(c.channel)} · ${esc(c.phone || c.external_id)}</div></div>
-      ${statusPill(c.status)}
+      ${scorePill(c.score)} ${statusPill(c.status)}
     </div>
+    ${c.score !== null ? `<p class="sub" style="margin:-4px 2px 12px;font-size:13.5px">Valutazione TL: ${esc(c.qualification)}</p>` : ""}
     ${
       c.ai_paused
         ? `<div class="banner"><span class="grow">L'assistente è in pausa: questa chat aspetta una tua risposta.</span><button class="btn small" id="resume">Riattiva</button></div>`
@@ -369,7 +390,7 @@ async function viewThread(id) {
     <div class="chat">${messages
       .map(
         (m) => `<div class="bubble ${m.author === "cliente" ? "in" : "out"}">${esc(m.text)}<div class="who">${
-          m.author === "agente" ? "Assistente TL" : m.author === "titolare" ? "Tu" : ""
+          m.kind === "followup" ? "Follow-up automatico" : m.author === "agente" ? "Assistente TL" : m.author === "titolare" ? "Tu" : ""
         } ${fmtTime(m.created_at)}</div></div>`,
       )
       .join("")}</div>
@@ -421,14 +442,15 @@ async function viewThread(id) {
 
 // ---------- Contatti (CRM) ----------
 async function viewContatti(status = "") {
-  const { contacts } = await api(`/contacts${status ? `?status=${encodeURIComponent(status)}` : ""}`);
+  const qs = status === "caldi" ? "?hot=1" : status ? `?status=${encodeURIComponent(status)}` : "";
+  const { contacts } = await api(`/contacts${qs}`);
   const main = shell(
     "contatti",
     "Contatti",
     `
     <div class="row" style="margin-bottom:12px">
-      ${["", "nuovo", "in trattativa", "cliente", "perso"]
-        .map((s) => `<button class="btn small ${s === status ? "" : "secondary"}" data-f="${s}">${s || "Tutti"}</button>`)
+      ${["", "caldi", "nuovo", "in trattativa", "cliente", "perso"]
+        .map((s) => `<button class="btn small ${s === status ? "" : "secondary"}" data-f="${s}">${s === "caldi" ? "🔥 Caldi" : s || "Tutti"}</button>`)
         .join("")}
       <span class="spacer"></span><button class="btn small accent" id="add">+ Nuovo</button>
     </div>
@@ -443,7 +465,7 @@ async function viewContatti(status = "") {
         ? contacts
             .map(
               (c) => `<li onclick="location.hash='#/chat/${c.id}'" style="cursor:pointer"><div class="avatar">${esc(initials(c.name || c.external_id))}</div>
-          <div class="grow"><div class="title">${esc(c.name || c.external_id)}</div><div class="meta">${esc(c.interest || channelName(c.channel))} · ${esc(c.phone)}</div></div>${statusPill(c.status)}</li>`,
+          <div class="grow"><div class="title">${esc(c.name || c.external_id)}</div><div class="meta">${esc(c.qualification || c.interest || channelName(c.channel))}</div></div>${scorePill(c.score)} ${statusPill(c.status)}</li>`,
             )
             .join("")
         : `<li class="empty">Nessun contatto.</li>`
@@ -676,6 +698,22 @@ function viewImpostazioni(welcome) {
         <label>Tono di voce</label><input type="text" name="tone" value="${esc(b.tone)}" />
       </div>
       <div class="card">
+        <b>Prequalifica dei contatti</b>
+        <label>Il tuo cliente ideale e come riconoscerlo<div class="hint">Es. "Zona Milano e provincia. Interessante se vuole un intervento entro 30 giorni e ha un budget sopra 300 €. Non seguiamo condomini." L'assistente fa le domande giuste e dà a ogni contatto un voto da 0 a 100: sopra 70 ti avvisa.</div></label>
+        <textarea name="qualification_rules">${esc(b.qualification_rules)}</textarea>
+      </div>
+      <div class="card">
+        <b>Follow-up automatici</b>
+        <label class="toggle" style="margin-top:10px"><input type="checkbox" name="followup_enabled" ${b.followup_enabled ? "checked" : ""}/> Ricontatta da solo chi smette di rispondere</label>
+        <p class="hint">Messaggi brevi scritti sulla conversazione, solo dal lunedì al sabato tra le 9 e le 20. Si ferma appena il cliente risponde, prenota o viene segnato come perso.</p>
+        <label>Dopo quante ore di silenzio</label><input type="number" name="followup_after_hours" value="${b.followup_after_hours}" min="1" max="720" />
+        <label>Quanti tentativi al massimo</label><input type="number" name="followup_max" value="${b.followup_max}" min="0" max="5" />
+        <label>Modello WhatsApp per i follow-up oltre 24 ore (facoltativo)<div class="hint">WhatsApp permette testo libero solo entro 24 ore dall'ultimo messaggio del cliente. Oltre serve un modello approvato da Meta in italiano, con un parametro per il nome (es. "Ciao {{1}}, posso ancora aiutarti?"). Scrivi qui il suo nome.</div></label>
+        <input type="text" name="wa_followup_template" value="${esc(b.wa_followup_template)}" placeholder="es. followup_cliente" />
+        <div id="fu" class="hint" style="margin-top:12px"></div>
+        <button type="button" class="btn small secondary" id="furun" style="margin-top:8px">Invia ora i follow-up in coda</button>
+      </div>
+      <div class="card">
         <b>Orari e agenda</b>
         <p class="hint">Formato "09:00-13:00, 15:00-19:00". Lascia vuoto se chiuso.</p>
         <div class="hours">${days.map((d) => `<span>${d}</span><input type="text" name="h_${d}" value="${esc(b.hours[d] ?? "")}" />`).join("")}</div>
@@ -700,6 +738,26 @@ function viewImpostazioni(welcome) {
       <button class="btn block" style="margin-top:14px">Salva</button>
     </form>`,
   );
+  const fu = main.querySelector("#fu");
+  const loadQueue = () =>
+    api("/followups").then(({ in_coda }) => {
+      fu.textContent = in_coda.length
+        ? `In coda ora: ${in_coda.map((c) => `${c.name} (tentativo ${c.tentativo})`).join(", ")}`
+        : "Nessun contatto in attesa di follow-up in questo momento.";
+    });
+  loadQueue();
+  main.querySelector("#furun").onclick = async (e) => {
+    e.target.disabled = true;
+    try {
+      const r = await api("/followups/run", { body: {} });
+      toast(`${r.sent} follow-up inviati${r.skipped.length ? `, ${r.skipped.length} saltati` : ""}`);
+      if (r.skipped.length) fu.textContent = r.skipped.map((s) => `${s.contact}: ${s.reason}`).join(" · ");
+      else loadQueue();
+    } catch (err) {
+      toast(err.message);
+    }
+    e.target.disabled = false;
+  };
   main.querySelector("#f").onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -714,6 +772,11 @@ function viewImpostazioni(welcome) {
       slot_minutes: Number(fd.get("slot_minutes")),
       hours: Object.fromEntries(days.map((d) => [d, String(fd.get(`h_${d}`) ?? "")])),
       ai_enabled: fd.get("ai_enabled") === "on",
+      qualification_rules: fd.get("qualification_rules"),
+      followup_enabled: fd.get("followup_enabled") === "on",
+      followup_after_hours: Number(fd.get("followup_after_hours")),
+      followup_max: Number(fd.get("followup_max")),
+      wa_followup_template: fd.get("wa_followup_template"),
       wa_phone_number_id: fd.get("wa_phone_number_id"),
       wa_token: fd.get("wa_token") || undefined,
     };

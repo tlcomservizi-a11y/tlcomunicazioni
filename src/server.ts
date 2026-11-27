@@ -8,6 +8,7 @@ import { all, one } from "./db.js";
 import { generateProposals } from "./agents/manager.js";
 import { AgentUnavailableError } from "./agents/client.js";
 import { nowLocal } from "./schedule.js";
+import { runFollowups } from "./followup.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -85,3 +86,14 @@ if (process.env.AUTO_PROPOSALS === "1") {
     }
   }, 10 * 60 * 1000);
 }
+
+// Follow-up automatici: ogni 10 minuti, per le attività che li hanno attivati (solo lun-sab 9-20).
+setInterval(async () => {
+  for (const b of all<{ id: number }>("SELECT id FROM businesses WHERE followup_enabled = 1 AND ai_enabled = 1")) {
+    const r = await runFollowups(b.id).catch((e) => {
+      console.error("[follow-up]", b.id, e.message);
+      return null;
+    });
+    if (r?.sent) console.log(`[follow-up] attività ${b.id}: ${r.sent} inviati`);
+  }
+}, 10 * 60 * 1000);

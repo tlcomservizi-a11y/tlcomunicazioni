@@ -80,6 +80,49 @@ export async function runAgent(opts: {
   return { text, refused: false };
 }
 
+/** Una sola chiamata senza tool (es. scrivere un messaggio di follow-up). */
+export async function generateText(opts: {
+  businessId: number;
+  agent: string;
+  system: string;
+  messages: Anthropic.Beta.BetaMessageParam[];
+  effort?: Effort;
+}): Promise<AgentResult> {
+  let msg: Anthropic.Beta.BetaMessage;
+  try {
+    msg = await anthropic.beta.messages.create({
+      model: MODEL,
+      max_tokens: 16000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
+      messages: opts.messages,
+      output_config: { effort: opts.effort ?? "low" },
+    });
+  } catch (err) {
+    if (err instanceof Anthropic.APIError) throw err;
+    throw new AgentUnavailableError((err as Error).message);
+  }
+  run(
+    `INSERT INTO agent_runs (business_id, agent, model, input_tokens, output_tokens, cache_read_tokens, stop_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    opts.businessId,
+    opts.agent,
+    msg.model,
+    msg.usage.input_tokens,
+    msg.usage.output_tokens,
+    msg.usage.cache_read_input_tokens ?? 0,
+    msg.stop_reason ?? "",
+  );
+  if (msg.stop_reason === "refusal") return { text: "", refused: true };
+  const text = msg.content
+    .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("\n")
+    .trim();
+  return { text, refused: false };
+}
+
 /** Converte la cronologia (autore + testo) in messaggi alternati user/assistant validi per l'API. */
 export function toApiMessages(
   rows: { role: "user" | "assistant"; text: string }[],

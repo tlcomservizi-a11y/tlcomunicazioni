@@ -22,5 +22,8 @@ Domande frequenti e informazioni utili:
 ${b.faq || "(nessuna)"}
 
 Tono di voce: ${b.tone}
+
+Cliente ideale e regole di qualifica (decise dal titolare):
+${b.qualification_rules || "(non indicate: considera promettente chi mostra un bisogno concreto, è nella zona servita e vuole agire a breve)"}
 </attivita>`;
 }

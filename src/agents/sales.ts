@@ -1,7 +1,7 @@
 // Agente Vendite: risponde ai clienti (WhatsApp, widget del sito) a nome dell'attività.
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
-import { addMessage, all, getBusiness, getContact, run, type Business, type Contact } from "../db.js";
+import { addMessage, all, getBusiness, getContact, HOT_SCORE, run, type Business, type Contact } from "../db.js";
 import { bookAppointment, cancelAppointment, describeNow, freeSlots, upcomingForContact } from "../schedule.js";
 import { runAgent, toApiMessages } from "./client.js";
 import { businessCard } from "./profile.js";
@@ -16,6 +16,7 @@ Come lavori:
 - Rispetta il tono di voce indicato nella scheda.
 - Per proporre orari usa sempre get_available_slots e proponi 2 o 3 alternative concrete. Fissa con book_appointment solo dopo che il cliente ha scelto un orario preciso.
 - Quando il cliente ti dice il nome, cosa gli interessa, email o telefono, salvali con update_contact. Aggiorna lo stato a "in trattativa" quando mostra interesse concreto e a "cliente" quando prenota.
+- Prequalifica: in base alle regole di qualifica della scheda, raccogli con naturalezza le informazioni che mancano (una domanda per messaggio, mai un interrogatorio). Appena hai elementi nuovi, valuta il contatto con qualify_lead; aggiorna la valutazione se cambia qualcosa.
 - Se il cliente chiede una persona, è arrabbiato, ha un reclamo, chiede sconti fuori listino o qualcosa che non sai gestire, usa handoff_to_owner e digli che il titolare lo ricontatterà a breve.
 - Non dire mai di essere un'intelligenza artificiale se non te lo chiedono; se te lo chiedono, dillo con naturalezza: sei l'assistente digitale dell'attività.
 - Rispondi in italiano, o nella lingua in cui scrive il cliente.
@@ -98,6 +99,29 @@ function salesTools(b: Business, contact: Contact) {
       },
     }),
     betaZodTool({
+      name: "qualify_lead",
+      description:
+        "Valuta quanto è promettente il contatto secondo le regole di qualifica della scheda. 0-39 poco interessante o fuori target, 40-69 da coltivare, 70-100 caldo (il titolare viene avvisato).",
+      inputSchema: z.object({
+        score: z.number().int().min(0).max(100),
+        reason: z.string().describe("Motivazione in una frase, con i fatti emersi (zona, budget, tempi, bisogno)"),
+      }),
+      run: async ({ score, reason }) => {
+        const before = getContact(b.id, contact.id)!;
+        run("UPDATE contacts SET score = ?, qualification = ? WHERE id = ?", score, reason, contact.id);
+        if (score >= HOT_SCORE && (before.score ?? 0) < HOT_SCORE) {
+          run(
+            "INSERT INTO proposals (business_id, title, detail, action_type, action_payload) VALUES (?, ?, ?, 'nota', ?)",
+            b.id,
+            `Contatto caldo: ${before.name || before.external_id} (${score}/100)`,
+            reason,
+            JSON.stringify({ contact_id: contact.id }),
+          );
+        }
+        return "Valutazione salvata.";
+      },
+    }),
+    betaZodTool({
       name: "handoff_to_owner",
       description:
         "Passa la conversazione al titolare: l'assistente smette di rispondere a questo cliente finché il titolare non lo riattiva.",
@@ -157,6 +181,7 @@ async function doReply(businessId: number, contactId: number): Promise<string | 
     contact.name && `nome: ${contact.name}`,
     contact.interest && `interesse: ${contact.interest}`,
     `stato: ${contact.status}`,
+    contact.score !== null && `valutazione attuale: ${contact.score}/100 (${contact.qualification})`,
     `canale: ${contact.channel}`,
   ]
     .filter(Boolean)

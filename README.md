@@ -11,6 +11,8 @@ Un team di agenti IA per le piccole attività: rispondono ai clienti su WhatsApp
 | **Agente Vendite**: risponde ai clienti, propone orari liberi, prenota, aggiorna il CRM, passa la chat al titolare | `src/agents/sales.ts` | ✅ |
 | **Agente Manager** ("Chiedi a TL"): numeri, contatti, agenda, messaggi ai clienti, bozze di inserzioni, scheda attività | `src/agents/manager.ts` | ✅ |
 | Proposte del giorno con "Fallo per me" | `generateProposals` / `executeProposal` | ✅ |
+| **Prequalifica**: il titolare descrive il cliente ideale, l'agente fa le domande giuste e dà a ogni contatto un voto 0-100 (sopra 70: avviso "contatto caldo") | `qualify_lead` in `src/agents/sales.ts` | ✅ |
+| **Follow-up automatici**: ricontatta chi smette di rispondere con messaggi scritti sulla conversazione (lun-sab 9-20, max N tentativi, si ferma se il cliente risponde o prenota) | `src/followup.ts` | ✅ |
 | WhatsApp Business Cloud API (webhook + invio) | `src/channels/whatsapp.ts` | ✅ (serve un numero Meta) |
 | Chat per il sito (una riga di codice) | `public/widget.js` | ✅ |
 | CRM contatti, agenda, account multi-attività | `src/db.ts`, `src/routes/api.ts` | ✅ |
@@ -36,7 +38,7 @@ Poi apri `http://localhost:3000`, registra un'attività, compila **Altro → La 
 2. Webhook: URL `https://TUO-DOMINIO/webhooks/whatsapp`, verify token uguale a `WHATSAPP_VERIFY_TOKEN`, campo `messages`.
 3. Nell'app TL, in **Impostazioni**, inserisci il *Phone number ID* e il token permanente (utente di sistema).
 
-Nota: con WhatsApp un'attività può scrivere liberamente solo entro 24 ore dall'ultimo messaggio del cliente. Oltre servono modelli di messaggio approvati da Meta, quindi i follow-up verso contatti fermi da più giorni possono essere rifiutati. L'errore viene mostrato nella proposta.
+Nota: con WhatsApp un'attività può scrivere liberamente solo entro 24 ore dall'ultimo messaggio del cliente. Oltre servono modelli di messaggio approvati da Meta. Per i follow-up automatici oltre le 24 ore crea su Meta un modello in italiano con un parametro per il nome (es. "Ciao {{1}}, posso ancora aiutarti con la tua richiesta?") e scrivine il nome in **Impostazioni → Follow-up automatici**. Senza modello, quei contatti vengono saltati.
 
 ## Chat sul sito
 
