@@ -1,0 +1,152 @@
+// Ponte WhatsApp di TL Comunicazioni.
+// Si collega al WhatsApp del telefono con il QR code (come WhatsApp Web), passa i messaggi dei clienti
+// all'assistente di Partner Hub e invia le sue risposte. Pannello con QR e stato su http://<host>:PORT
+// protetto da password. Le risposte manuali del titolare dal telefono vengono segnalate a Partner Hub,
+// che in quella chat lascia parlare la persona.
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { timingSafeEqual } from "node:crypto";
+import QRCode from "qrcode";
+import pino from "pino";
+import makeWASocket, { Browsers, DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState } from "baileys";
+import { toPayload, makeLimiter, typingDelay, digits } from "./core.js";
+
+const env = (k, d = "") => process.env[k] || d;
+const PORT = Number(env("PORT", "3100"));
+const PANEL_PASSWORD = env("PANEL_PASSWORD");
+const HUB_URL = env("HUB_WEBHOOK_URL", "https://tl-comunicazioni-partner-hub-6a08e961.base44.app/functions/whatsappWebhook");
+const GATEWAY_SECRET = env("GATEWAY_SECRET");
+const AUTH_DIR = path.resolve(env("AUTH_DIR", "data/sessione"));
+
+if (!PANEL_PASSWORD || PANEL_PASSWORD.length < 10) throw Error("Imposta PANEL_PASSWORD (almeno 10 caratteri)");
+if (!GATEWAY_SECRET) throw Error("Imposta GATEWAY_SECRET (lo stesso valore di TL_GATEWAY_SECRET in Partner Hub)");
+
+const logger = pino({ level: env("LOG_LEVEL", "warn") });
+const state = { status: "avvio", qr: "", me: "", since: new Date().toISOString(), lastError: "", handled: 0, replied: 0 };
+const ownSentIds = new Set();
+const jidByPhone = new Map(); // per rispondere sulla stessa chat (anche quelle con identificativo @lid)
+const allow = makeLimiter();
+let sock = null;
+let retry = 0;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function remember(id) { ownSentIds.add(id); if (ownSentIds.size > 2000) ownSentIds.delete(ownSentIds.values().next().value); }
+
+async function forward(payload) {
+  const r = await fetch(HUB_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-tl-gateway-secret": GATEWAY_SECRET },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(90000),
+  });
+  if (!r.ok) throw Error(`Partner Hub HTTP ${r.status}`);
+  return r.json();
+}
+
+async function reply(to, text) {
+  const jid = jidByPhone.get(to) || `${to}@s.whatsapp.net`;
+  if (!allow(to)) { logger.warn({ to }, "limite di sicurezza: risposta non inviata"); return; }
+  try { await sock.sendPresenceUpdate("composing", jid); } catch {}
+  await sleep(typingDelay(text));
+  const sent = await sock.sendMessage(jid, { text });
+  if (sent?.key?.id) remember(sent.key.id);
+  try { await sock.sendPresenceUpdate("paused", jid); } catch {}
+  state.replied++;
+}
+
+async function onMessage(msg) {
+  const payload = toPayload(msg, ownSentIds);
+  if (!payload) return;
+  const v = payload.entry[0].changes[0].value;
+  const phone = v.messages?.[0]?.from || v.message_echoes?.[0]?.to;
+  if (phone) jidByPhone.set(phone, msg.key.remoteJid);
+  const res = await forward(payload);
+  state.handled++;
+  for (const r of res?.replies || []) {
+    if (r?.to && r?.text && digits(r.to) === phone) await reply(phone, String(r.text).slice(0, 1500));
+  }
+}
+
+async function start() {
+  fs.mkdirSync(AUTH_DIR, { recursive: true });
+  const { state: auth, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: undefined }));
+  sock = makeWASocket({
+    auth, version, logger,
+    browser: Browsers.macOS("Desktop"),
+    markOnlineOnConnect: false, // il telefono continua a ricevere le notifiche
+    syncFullHistory: false,
+    emitOwnEvents: false,
+  });
+  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("connection.update", async (u) => {
+    if (u.qr) { state.status = "da_collegare"; state.qr = await QRCode.toDataURL(u.qr, { margin: 1, width: 320 }); }
+    if (u.connection === "open") {
+      retry = 0;
+      Object.assign(state, { status: "collegato", qr: "", me: digits(String(sock.user?.id || "").split(":")[0]), since: new Date().toISOString(), lastError: "" });
+      console.log("WhatsApp collegato:", state.me);
+    }
+    if (u.connection === "close") {
+      const code = u.lastDisconnect?.error?.output?.statusCode;
+      state.lastError = String(u.lastDisconnect?.error?.message || code || "");
+      if (code === DisconnectReason.loggedOut) {
+        // Scollegato dal telefono: si cancella la sessione e si mostra un nuovo QR.
+        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        Object.assign(state, { status: "scollegato", me: "", qr: "" });
+        retry = 0;
+      } else {
+        state.status = "riconnessione";
+      }
+      const wait = Math.min(60000, 2000 * 2 ** retry++);
+      setTimeout(() => start().catch((e) => { state.lastError = e.message; }), wait);
+    }
+  });
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return; // ignora la cronologia sincronizzata al collegamento
+    for (const m of messages) {
+      try { await onMessage(m); } catch (e) { state.lastError = e.message; logger.error({ err: e.message }, "messaggio non gestito"); }
+    }
+  });
+}
+
+// ---------- Pannello (QR e stato) ----------
+function authorized(req) {
+  const h = req.headers.authorization || "";
+  if (!h.startsWith("Basic ")) return false;
+  const pass = Buffer.from(h.slice(6), "base64").toString().split(":").slice(1).join(":");
+  const a = Buffer.from(pass), b = Buffer.from(PANEL_PASSWORD);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+const PAGE = `<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>Ponte WhatsApp TL</title><style>
+body{font-family:system-ui,sans-serif;background:#f4f7f7;color:#13302f;margin:0;padding:24px;display:flex;justify-content:center}
+.card{background:#fff;border-radius:16px;box-shadow:0 2px 12px #0001;padding:24px;max-width:420px;width:100%;text-align:center}
+h1{font-size:20px;margin:0 0 4px}small{color:#5b7170}img{width:280px;height:280px;margin:16px auto;display:block}
+.st{display:inline-block;padding:6px 12px;border-radius:99px;font-weight:600;margin:12px 0}
+.ok{background:#d9f5e3;color:#11643a}.wait{background:#fff1cc;color:#7a5200}.ko{background:#fde0e0;color:#8a1f1f}
+ol{text-align:left;font-size:14px;line-height:1.6}button{border:0;border-radius:10px;padding:10px 16px;background:#8a1f1f;color:#fff;font-weight:600;cursor:pointer}
+</style></head><body><div class="card"><h1>Ponte WhatsApp</h1><small>TL Comunicazioni – Connessi al valore</small><div id="c">Caricamento…</div></div>
+<script>
+async function load(){const s=await (await fetch('/stato')).json();const c=document.getElementById('c');
+if(s.status==='collegato'){c.innerHTML='<div class="st ok">Collegato</div><p>Numero: <b>+'+s.me+'</b><br>Messaggi gestiti: '+s.handled+' · risposte inviate: '+s.replied+'</p><button onclick="if(confirm(\\'Scollegare WhatsApp dal ponte?\\'))fetch(\\'/scollega\\',{method:\\'POST\\'}).then(load)">Scollega</button>';}
+else if(s.qr){c.innerHTML='<div class="st wait">Da collegare</div><img alt="QR code" src="'+s.qr+'"><ol><li>Apri WhatsApp Business sul telefono</li><li>Menu ⋮ → <b>Dispositivi collegati</b> → <b>Collega un dispositivo</b></li><li>Inquadra questo QR</li></ol>';}
+else{c.innerHTML='<div class="st ko">'+s.status+'</div><p>'+(s.lastError||'Attendo il QR…')+'</p>';}}
+load();setInterval(load,4000);
+</script></body></html>`;
+
+http.createServer(async (req, res) => {
+  if (req.url === "/salute") { res.writeHead(200).end(state.status); return; }
+  if (!authorized(req)) { res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Ponte WhatsApp TL"' }).end("Accesso riservato"); return; }
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method === "GET" && req.url === "/") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(PAGE); return; }
+  if (req.method === "GET" && req.url === "/stato") { res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(state)); return; }
+  if (req.method === "POST" && req.url === "/scollega") {
+    try { await sock?.logout(); } catch {}
+    res.writeHead(200).end("ok"); return;
+  }
+  res.writeHead(404).end("Non trovato");
+}).listen(PORT, () => console.log(`Pannello del ponte su http://localhost:${PORT}`));
+
+start().catch((e) => { state.status = "errore"; state.lastError = e.message; console.error(e); });

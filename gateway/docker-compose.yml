@@ -1,0 +1,11 @@
+services:
+  ponte-whatsapp:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      AUTH_DIR: /data/sessione
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ./data:/data
