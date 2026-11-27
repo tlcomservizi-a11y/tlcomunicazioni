@@ -13,6 +13,7 @@ Un team di agenti IA per le piccole attività: rispondono ai clienti su WhatsApp
 | Proposte del giorno con "Fallo per me" | `generateProposals` / `executeProposal` | ✅ |
 | **Prequalifica**: il titolare descrive il cliente ideale, l'agente fa le domande giuste e dà a ogni contatto un voto 0-100 (sopra 70: avviso "contatto caldo") | `qualify_lead` in `src/agents/sales.ts` | ✅ |
 | **Follow-up automatici**: ricontatta chi smette di rispondere con messaggi scritti sulla conversazione (lun-sab 9-20, max N tentativi, si ferma se il cliente risponde o prenota) | `src/followup.ts` | ✅ |
+| **Piani e crediti con Stripe**: prova gratuita, mensile/annuale con crediti IA mensili, pacchetti extra, portale clienti, blocco dell'IA a crediti finiti | `src/billing.ts` | ✅ |
 | WhatsApp Business Cloud API (webhook + invio) | `src/channels/whatsapp.ts` | ✅ (serve un numero Meta) |
 | Chat per il sito (una riga di codice) | `public/widget.js` | ✅ |
 | CRM contatti, agenda, account multi-attività | `src/db.ts`, `src/routes/api.ts` | ✅ |
@@ -39,6 +40,22 @@ Poi apri `http://localhost:3000`, registra un'attività, compila **Altro → La 
 3. Nell'app TL, in **Impostazioni**, inserisci il *Phone number ID* e il token permanente (utente di sistema).
 
 Nota: con WhatsApp un'attività può scrivere liberamente solo entro 24 ore dall'ultimo messaggio del cliente. Oltre servono modelli di messaggio approvati da Meta. Per i follow-up automatici oltre le 24 ore crea su Meta un modello in italiano con un parametro per il nome (es. "Ciao {{1}}, posso ancora aiutarti con la tua richiesta?") e scrivine il nome in **Impostazioni → Follow-up automatici**. Senza modello, quei contatti vengono saltati.
+
+## Pagamenti (Stripe)
+
+Senza `STRIPE_SECRET_KEY` i pagamenti sono disattivati e gli agenti funzionano senza limiti, per sviluppo o uso interno.
+
+1. Su Stripe crea un prodotto "TL Agenti" con due prezzi ricorrenti (mensile e annuale) e un prodotto "Pacchetto crediti" con un prezzo una tantum. Metti i loro ID in `STRIPE_PRICE_MONTHLY`, `STRIPE_PRICE_YEARLY` e `STRIPE_PRICE_PACK`.
+2. Webhook: endpoint `https://TUO-DOMINIO/webhooks/stripe` con gli eventi `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated` e `customer.subscription.deleted`. Il segreto di firma va in `STRIPE_WEBHOOK_SECRET`.
+3. Attiva il Customer Portal di Stripe, che il titolare usa per cambiare carta, scaricare le fatture e disdire.
+4. I prezzi mostrati nell'app e nella landing vengono da `PRICE_MONTHLY_EUR`, `PRICE_YEARLY_EUR` e `PRICE_PACK_EUR`, e devono coincidere con quelli su Stripe.
+
+Come funzionano i crediti:
+- 1 credito vale `CREDIT_USD` dollari di costo reale dell'IA (di default 0,01 $). Viene calcolato dai token di ogni chiamata, quindi una risposta a un cliente costa in genere 1-3 crediti.
+- Ogni attività ha i crediti del piano, che si ricaricano ogni mese (`PLAN_CREDITS`, anche con il piano annuale), e i crediti extra comprati, che non scadono.
+- Le nuove attività partono con una prova di `TRIAL_DAYS` giorni e `TRIAL_CREDITS` crediti.
+- A crediti finiti l'assistente non risponde più. Il cliente riceve un messaggio di cortesia e la chat passa al titolare, che viene avvisato.
+- Movimenti nella tabella `credit_ledger`, consumi per agente in `agent_runs.credits`.
 
 ## Chat sul sito
 

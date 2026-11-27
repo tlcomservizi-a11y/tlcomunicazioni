@@ -197,3 +197,11 @@ textarea { resize: vertical; min-height: 90px; }
 .ad + .ad { margin-top: 10px; }
 .ad h4 { margin: 6px 0 4px; font-size: 16px; }
 .ad p { margin: 0 0 8px; }
+
+.meter { height: 8px; border-radius: 99px; background: var(--surface-2); overflow: hidden; margin: 14px 0 6px; }
+.meter span { display: block; height: 100%; background: var(--brand); border-radius: 99px; }
+.plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.plan .price { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; margin: 6px 0 2px; }
+.plan .price small { font-size: 15px; color: var(--muted); font-weight: 500; }
+.plan.best { border-color: var(--accent); }
+.plan .pill { float: right; }

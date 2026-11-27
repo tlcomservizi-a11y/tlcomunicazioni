@@ -142,6 +142,28 @@ db.exec(`UPDATE contacts SET last_customer_at =
   (SELECT max(created_at) FROM messages m WHERE m.contact_id = contacts.id AND m.author = 'cliente')
   WHERE last_customer_at IS NULL`);
 
+// Piano e crediti
+addColumn("businesses", "plan", "TEXT DEFAULT 'trial'");              // trial | monthly | yearly
+addColumn("businesses", "plan_status", "TEXT DEFAULT 'trial'");       // trial | active | past_due | canceled
+addColumn("businesses", "trial_ends_at", "TEXT");
+addColumn("businesses", "plan_credits", "INTEGER DEFAULT 0");         // crediti del mese, si azzerano a ogni rinnovo
+addColumn("businesses", "extra_credits", "INTEGER DEFAULT 0");        // pacchetti acquistati, non scadono
+addColumn("businesses", "credits_reset_at", "TEXT");
+addColumn("businesses", "stripe_customer_id", "TEXT DEFAULT ''");
+addColumn("businesses", "stripe_subscription_id", "TEXT DEFAULT ''");
+addColumn("agent_runs", "cache_write_tokens", "INTEGER DEFAULT 0");
+addColumn("agent_runs", "credits", "INTEGER DEFAULT 0");
+db.exec(`
+CREATE TABLE IF NOT EXISTS credit_ledger (
+  id INTEGER PRIMARY KEY,
+  business_id INTEGER NOT NULL REFERENCES businesses(id),
+  delta INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS stripe_events (id TEXT PRIMARY KEY, created_at TEXT DEFAULT (datetime('now')));
+`);
+
 export const HOT_SCORE = 70;
 
 export type Row = Record<string, any>;
@@ -177,6 +199,14 @@ export interface Business {
   followup_after_hours: number;
   followup_max: number;
   wa_followup_template: string;
+  plan: string;
+  plan_status: string;
+  trial_ends_at: string | null;
+  plan_credits: number;
+  extra_credits: number;
+  credits_reset_at: string | null;
+  stripe_customer_id: string;
+  stripe_subscription_id: string;
 }
 
 export interface Contact {

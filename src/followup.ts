@@ -2,6 +2,7 @@
 // a partire dalla conversazione. Si ferma appena il cliente risponde o dopo N tentativi.
 import { addMessage, all, getBusiness, run, type Business, type Contact } from "./db.js";
 import { generateText } from "./agents/client.js";
+import { canUseAI } from "./billing.js";
 import { businessCard } from "./agents/profile.js";
 import { sendToContact } from "./channels/send.js";
 import { sendWhatsAppTemplate } from "./channels/whatsapp.js";
@@ -113,6 +114,10 @@ export async function runFollowups(businessId: number, force = false): Promise<F
   const b = getBusiness(businessId);
   const report: FollowupReport = { sent: 0, skipped: [] };
   if (!force && (!b.followup_enabled || !b.ai_enabled || !politeHour())) return report;
+  if (!canUseAI(b)) {
+    report.skipped.push({ contact: "tutti", reason: "crediti IA esauriti" });
+    return report;
+  }
   for (const c of dueContacts(b)) {
     try {
       const skip = await followupOne(b, c);

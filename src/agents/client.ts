@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaRunnableTool } from "@anthropic-ai/sdk/lib/tools/BetaRunnableTool";
 import { run } from "../db.js";
+import { charge, creditsFor, ensureCredits } from "../billing.js";
 
 // Credenziali: ANTHROPIC_API_KEY (o un profilo `ant auth login`).
 export const anthropic = new Anthropic();
@@ -29,6 +30,7 @@ export async function runAgent(opts: {
   effort?: Effort;
   maxIterations?: number;
 }): Promise<AgentResult> {
+  ensureCredits(opts.businessId);
   const runner = anthropic.beta.messages.toolRunner({
     model: MODEL,
     max_tokens: 16000,
@@ -45,12 +47,14 @@ export async function runAgent(opts: {
   let inTok = 0;
   let outTok = 0;
   let cacheTok = 0;
+  let cacheWriteTok = 0;
   try {
     for await (const message of runner) {
       last = message;
       inTok += message.usage.input_tokens;
       outTok += message.usage.output_tokens;
       cacheTok += message.usage.cache_read_input_tokens ?? 0;
+      cacheWriteTok += message.usage.cache_creation_input_tokens ?? 0;
     }
   } catch (err) {
     if (err instanceof Anthropic.APIError) throw err;
@@ -58,18 +62,7 @@ export async function runAgent(opts: {
     throw new AgentUnavailableError((err as Error).message);
   }
   if (!last) throw new Error("Nessuna risposta dal modello");
-
-  run(
-    `INSERT INTO agent_runs (business_id, agent, model, input_tokens, output_tokens, cache_read_tokens, stop_reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    opts.businessId,
-    opts.agent,
-    last.model,
-    inTok,
-    outTok,
-    cacheTok,
-    last.stop_reason ?? "",
-  );
+  recordUsage(opts.businessId, opts.agent, last, { input: inTok, output: outTok, cacheRead: cacheTok, cacheWrite: cacheWriteTok });
 
   if (last.stop_reason === "refusal") return { text: "", refused: true };
   const text = last.content
@@ -80,6 +73,22 @@ export async function runAgent(opts: {
   return { text, refused: false };
 }
 
+/** Registra i token usati e scala i crediti corrispondenti. */
+function recordUsage(
+  businessId: number,
+  agent: string,
+  msg: Anthropic.Beta.BetaMessage,
+  u: { input: number; output: number; cacheRead: number; cacheWrite: number },
+) {
+  const credits = creditsFor({ model: msg.model, ...u });
+  run(
+    `INSERT INTO agent_runs (business_id, agent, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, credits, stop_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    businessId, agent, msg.model, u.input, u.output, u.cacheRead, u.cacheWrite, credits, msg.stop_reason ?? "",
+  );
+  charge(businessId, credits, `Agente ${agent}`);
+}
+
 /** Una sola chiamata senza tool (es. scrivere un messaggio di follow-up). */
 export async function generateText(opts: {
   businessId: number;
@@ -88,6 +97,7 @@ export async function generateText(opts: {
   messages: Anthropic.Beta.BetaMessageParam[];
   effort?: Effort;
 }): Promise<AgentResult> {
+  ensureCredits(opts.businessId);
   let msg: Anthropic.Beta.BetaMessage;
   try {
     msg = await anthropic.beta.messages.create({
@@ -103,17 +113,12 @@ export async function generateText(opts: {
     if (err instanceof Anthropic.APIError) throw err;
     throw new AgentUnavailableError((err as Error).message);
   }
-  run(
-    `INSERT INTO agent_runs (business_id, agent, model, input_tokens, output_tokens, cache_read_tokens, stop_reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    opts.businessId,
-    opts.agent,
-    msg.model,
-    msg.usage.input_tokens,
-    msg.usage.output_tokens,
-    msg.usage.cache_read_input_tokens ?? 0,
-    msg.stop_reason ?? "",
-  );
+  recordUsage(opts.businessId, opts.agent, msg, {
+    input: msg.usage.input_tokens,
+    output: msg.usage.output_tokens,
+    cacheRead: msg.usage.cache_read_input_tokens ?? 0,
+    cacheWrite: msg.usage.cache_creation_input_tokens ?? 0,
+  });
   if (msg.stop_reason === "refusal") return { text: "", refused: true };
   const text = msg.content
     .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")

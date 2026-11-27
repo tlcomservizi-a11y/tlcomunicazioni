@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import cookieParser from "cookie-parser";
 import Anthropic from "@anthropic-ai/sdk";
+import Stripe from "stripe";
 import { ZodError } from "zod";
 import { api } from "./routes/api.js";
 import { receiveWebhook, verifyWebhook } from "./channels/whatsapp.js";
@@ -9,6 +10,8 @@ import { generateProposals } from "./agents/manager.js";
 import { AgentUnavailableError } from "./agents/client.js";
 import { nowLocal } from "./schedule.js";
 import { runFollowups } from "./followup.js";
+import { canUseAI, monthlyRefill, OutOfCreditsError, stripeWebhook } from "./billing.js";
+import { getBusiness } from "./db.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -33,6 +36,7 @@ app.use("/api/public", (req, res, next) => {
   }
   next();
 });
+app.post("/webhooks/stripe", stripeWebhook);
 app.get("/webhooks/whatsapp", verifyWebhook);
 app.post("/webhooks/whatsapp", receiveWebhook);
 app.use("/api", api);
@@ -42,6 +46,15 @@ app.get(/^\/app(\/.*)?$/, (_req, res) => res.sendFile("app/index.html", { root: 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof ZodError) {
     res.status(400).json({ error: "Dati non validi", details: err.issues });
+    return;
+  }
+  if (err instanceof Stripe.errors.StripeError) {
+    console.error("[stripe]", err.type, err.message);
+    res.status(502).json({ error: "Il servizio di pagamento non risponde, riprova tra poco." });
+    return;
+  }
+  if (err instanceof OutOfCreditsError) {
+    res.status(402).json({ error: err.message });
     return;
   }
   if (err instanceof Anthropic.AuthenticationError) {
@@ -81,7 +94,7 @@ if (process.env.AUTO_PROPOSALS === "1") {
     if (hour !== 8) return;
     for (const b of all<{ id: number }>("SELECT id FROM businesses WHERE ai_enabled = 1")) {
       const done = one("SELECT 1 FROM proposals WHERE business_id = ? AND date(created_at) = date('now') AND action_type != 'nota'", b.id);
-      if (done) continue;
+      if (done || !canUseAI(getBusiness(b.id))) continue;
       await generateProposals(b.id).catch((e) => console.error("[proposte]", b.id, e.message));
     }
   }, 10 * 60 * 1000);
@@ -97,3 +110,7 @@ setInterval(async () => {
     if (r?.sent) console.log(`[follow-up] attività ${b.id}: ${r.sent} inviati`);
   }
 }, 10 * 60 * 1000);
+
+// Ricarica mensile dei crediti dei piani attivi.
+monthlyRefill();
+setInterval(monthlyRefill, 60 * 60 * 1000);

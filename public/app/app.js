@@ -130,8 +130,25 @@ async function loadMe() {
 }
 
 // ---------- Oggi ----------
+function creditsBanner(bl) {
+  if (!bl?.enabled) return "";
+  const left = bl.plan_credits + bl.extra_credits;
+  if (!bl.can_use_ai)
+    return `<div class="banner"><span class="grow">${bl.status === "trial_scaduta" ? "La prova gratuita è finita." : "Crediti IA esauriti."} L'assistente non risponde più ai clienti.</span><a class="btn small" href="#/piano">Ricarica</a></div>`;
+  if (bl.status === "past_due")
+    return `<div class="banner"><span class="grow">Il pagamento dell'abbonamento non è andato a buon fine.</span><a class="btn small" href="#/piano">Controlla</a></div>`;
+  if (left < bl.plan_credits_total * 0.15)
+    return `<div class="banner"><span class="grow">Restano ${left} crediti IA.</span><a class="btn small" href="#/piano">Ricarica</a></div>`;
+  if (bl.status === "trial" && bl.trial_ends_at) {
+    const days = Math.ceil((Date.parse(bl.trial_ends_at) - Date.now()) / 864e5);
+    if (days <= 5) return `<div class="banner"><span class="grow">La prova gratuita finisce tra ${days} giorni.</span><a class="btn small" href="#/piano">Scegli il piano</a></div>`;
+  }
+  return "";
+}
+
 async function viewOggi() {
-  const [d, p] = await Promise.all([api("/dashboard"), api("/proposals")]);
+  const [d, p, bl] = await Promise.all([api("/dashboard"), api("/proposals"), api("/billing")]);
+  me.billing = bl;
   const hour = new Date().getHours();
   const hello = hour < 13 ? "Buongiorno" : hour < 18 ? "Buon pomeriggio" : "Buonasera";
   const todo = p.proposals.filter((x) => x.status === "da fare");
@@ -142,6 +159,7 @@ async function viewOggi() {
     `
     <p class="hello">${hello}${me.user.name ? ", " + esc(me.user.name.split(" ")[0]) : ""}</p>
     <p class="sub">Ecco cosa hanno fatto i tuoi agenti.</p>
+    ${creditsBanner(me.billing)}
     ${!me.business.services ? `<div class="banner">Gli agenti non conoscono ancora servizi e prezzi. <a href="#/impostazioni">Completa la scheda</a></div>` : ""}
     <div class="stats">
       <div class="stat"><b>${d.contatti_oggi}</b><span>Contatti oggi</span></div>
@@ -488,6 +506,7 @@ function viewAltro() {
     ["agenti", "Il tuo team di agenti", "Chi fa cosa"],
     ["prova", "Prova l'assistente", "Scrivi come se fossi un cliente"],
     ["impostazioni", "La tua attività e i canali", "Servizi, prezzi, orari, WhatsApp, widget del sito"],
+    ["piano", "Piano e crediti", "Abbonamento, crediti IA rimasti, ricariche"],
   ];
   const main = shell(
     "altro",
@@ -672,6 +691,84 @@ function viewProva() {
   };
 }
 
+// ---------- Piano e crediti ----------
+const AGENT_NAMES = { vendite: "Risposte ai clienti", manager: "Chiedi a TL", "manager-proposte": "Proposte del giorno", "follow-up": "Follow-up automatici" };
+const STATUS_NAMES = { trial: "Prova gratuita", trial_scaduta: "Prova gratuita finita", active: "Attivo", past_due: "Pagamento non riuscito", canceled: "Disdetto" };
+
+async function viewPiano(esito) {
+  const bl = await api("/billing");
+  me.billing = bl;
+  const o = bl.offer;
+  const left = bl.plan_credits + bl.extra_credits;
+  const pct = Math.min(100, Math.round((bl.plan_credits / Math.max(1, bl.plan_credits_total)) * 100));
+  const activePlan = bl.status === "active" || bl.status === "past_due";
+  const main = shell(
+    "altro",
+    "Piano e crediti",
+    !bl.enabled
+      ? `<div class="card"><b>Pagamenti non attivi su questo server.</b><p class="sub" style="margin:6px 0 0">Gli agenti funzionano senza limiti di crediti. Per attivarli imposta le chiavi Stripe (vedi README).</p></div>`
+      : `
+    ${esito === "ok" ? `<div class="banner" style="background:var(--ok-soft);color:var(--ok)">Pagamento ricevuto, grazie! I crediti compaiono qui appena Stripe conferma (pochi secondi).</div>` : ""}
+    ${creditsBanner(bl)}
+    <div class="card">
+      <div class="row"><b style="font-size:17px">${bl.plan === "yearly" ? "Piano annuale" : bl.plan === "monthly" ? "Piano mensile" : "Prova gratuita"}</b><span class="spacer"></span>
+      <span class="pill ${bl.status === "active" || bl.status === "trial" ? "ok" : "warn"}">${STATUS_NAMES[bl.status] ?? bl.status}</span></div>
+      ${bl.status === "trial" && bl.trial_ends_at ? `<p class="sub" style="margin:6px 0 0">Fino al ${new Date(bl.trial_ends_at).toLocaleDateString("it-IT", { day: "numeric", month: "long" })}</p>` : ""}
+      <div class="stats" style="margin-top:14px;grid-template-columns:repeat(2,1fr)">
+        <div class="stat"><b>${left}</b><span>Crediti IA disponibili</span></div>
+        <div class="stat"><b>${bl.extra_credits}</b><span>di cui extra (non scadono)</span></div>
+      </div>
+      <div class="meter" aria-label="Crediti del piano rimasti"><span style="width:${pct}%"></span></div>
+      <p class="hint">${bl.plan_credits} di ${bl.plan_credits_total} crediti del ${bl.plan === "trial" ? "periodo di prova" : "mese"}. Una risposta a un cliente costa in genere 1-3 crediti.</p>
+      ${bl.has_portal ? `<button class="btn secondary block" id="portal" style="margin-top:10px">Gestisci abbonamento, fatture e carta</button>` : ""}
+    </div>
+
+    ${
+      activePlan
+        ? ""
+        : `<div class="section-title">Scegli il piano</div>
+    <div class="plans">
+      <div class="card plan"><b>Mensile</b><div class="price">${o.monthly_eur} €<small>/mese</small></div>
+        <p class="hint">${o.plan_credits} crediti IA al mese, tutti gli agenti, senza vincoli.</p>
+        <button class="btn block" data-buy="monthly" ${o.available.monthly ? "" : "disabled"}>Attiva</button></div>
+      <div class="card plan best"><span class="pill accent">Risparmi ${Math.round(100 - (o.yearly_eur / (o.monthly_eur * 12)) * 100)}%</span><b>Annuale</b><div class="price">${o.yearly_eur} €<small>/anno</small></div>
+        <p class="hint">${o.plan_credits} crediti IA ogni mese, tutti gli agenti.</p>
+        <button class="btn accent block" data-buy="yearly" ${o.available.yearly ? "" : "disabled"}>Attiva</button></div>
+    </div>`
+    }
+    <div class="card" style="margin-top:14px">
+      <div class="row"><div class="grow"><b>Pacchetto ${o.pack_credits} crediti</b><div class="hint">${o.pack_eur} € una tantum, non scadono. Si usano quando finiscono quelli del piano.</div></div>
+      <button class="btn secondary" data-buy="pack" ${o.available.pack ? "" : "disabled"}>Compra</button></div>
+    </div>
+
+    <div class="section-title">Consumo ultimi 30 giorni</div>
+    <div class="card"><ul class="list">${
+      bl.usage_30d.length
+        ? bl.usage_30d.map((u) => `<li><div class="grow"><div class="title">${esc(AGENT_NAMES[u.agent] ?? u.agent)}</div><div class="meta">${u.chiamate} ${u.chiamate === 1 ? "operazione" : "operazioni"}</div></div><b>${u.crediti ?? 0} ${u.crediti === 1 ? "credito" : "crediti"}</b></li>`).join("")
+        : `<li class="empty">Nessun consumo ancora.</li>`
+    }</ul></div>`,
+  );
+  main.querySelectorAll("[data-buy]").forEach(
+    (b) =>
+      (b.onclick = async () => {
+        b.disabled = true;
+        try {
+          location.href = (await api("/billing/checkout", { body: { kind: b.dataset.buy } })).url;
+        } catch (e) {
+          toast(e.message);
+          b.disabled = false;
+        }
+      }),
+  );
+  main.querySelector("#portal")?.addEventListener("click", async () => {
+    try {
+      location.href = (await api("/billing/portal", { body: {} })).url;
+    } catch (e) {
+      toast(e.message);
+    }
+  });
+}
+
 // ---------- Impostazioni ----------
 function viewImpostazioni(welcome) {
   const b = me.business;
@@ -813,6 +910,7 @@ async function route() {
       case "pubblicita": return await viewPubblicita();
       case "agenti": return viewAgenti();
       case "prova": return viewProva();
+      case "piano": return await viewPiano(new URLSearchParams(query).get("esito"));
       case "impostazioni": return viewImpostazioni(new URLSearchParams(query).has("benvenuto"));
       default: return await viewOggi();
     }

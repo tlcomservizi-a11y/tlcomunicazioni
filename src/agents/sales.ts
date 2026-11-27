@@ -1,9 +1,10 @@
 // Agente Vendite: risponde ai clienti (WhatsApp, widget del sito) a nome dell'attività.
 import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
-import { addMessage, all, getBusiness, getContact, HOT_SCORE, run, type Business, type Contact } from "../db.js";
+import { addMessage, all, getBusiness, getContact, HOT_SCORE, one, run, type Business, type Contact } from "../db.js";
 import { bookAppointment, cancelAppointment, describeNow, freeSlots, upcomingForContact } from "../schedule.js";
 import { runAgent, toApiMessages } from "./client.js";
+import { OutOfCreditsError } from "../billing.js";
 import { businessCard } from "./profile.js";
 
 const SALES_SYSTEM = `Sei l'assistente commerciale di una piccola attività italiana e rispondi ai suoi clienti in chat (WhatsApp o chat del sito) a nome dell'attività.
@@ -201,11 +202,19 @@ async function doReply(businessId: number, contactId: number): Promise<string | 
   } catch (err) {
     // IA non raggiungibile: il cliente riceve comunque una risposta e la chat passa al titolare.
     console.error("[vendite] agente non disponibile:", (err as Error).message);
+    const noCredits = err instanceof OutOfCreditsError;
+    if (noCredits && !one("SELECT 1 FROM proposals WHERE business_id = ? AND title = 'Crediti IA esauriti' AND status = 'da fare'", businessId)) {
+      run(
+        "INSERT INTO proposals (business_id, title, detail, action_type, action_payload) VALUES (?, 'Crediti IA esauriti', ?, 'nota', '{}')",
+        businessId,
+        "L'assistente non risponde più ai clienti: ricarica da Altro → Piano e crediti. Le chat in arrivo aspettano te.",
+      );
+    }
     run(
       "INSERT INTO proposals (business_id, title, detail, action_type, action_payload) VALUES (?, ?, ?, 'nota', ?)",
       businessId,
       `Rispondi a ${contact.name || contact.external_id}`,
-      "L'assistente non era disponibile: il cliente aspetta una tua risposta.",
+      noCredits ? "Crediti IA esauriti: il cliente aspetta una tua risposta." : "L'assistente non era disponibile: il cliente aspetta una tua risposta.",
       JSON.stringify({ contact_id: contactId }),
     );
     res = { text: "", refused: true };

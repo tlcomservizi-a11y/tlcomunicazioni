@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { addMessage, all, getBusiness, getContact, HOT_SCORE, one, run, upsertContact, type Business, type Contact } from "../db.js";
 import { dueContacts, runFollowups } from "../followup.js";
+import { billingSummary, createCheckout, createPortal, PLAN, startTrial } from "../billing.js";
 import { checkPassword, createSession, destroySession, hashPassword, requireAuth, type AuthedRequest } from "../auth.js";
 import { askManager, executeProposal, generateProposals } from "../agents/manager.js";
 import { replyToCustomer } from "../agents/sales.js";
@@ -13,7 +14,7 @@ export const api = Router();
 const bid = (req: Request) => (req as AuthedRequest).businessId;
 
 function publicBusiness(b: Business) {
-  const { wa_token, ...rest } = b;
+  const { wa_token, stripe_customer_id, stripe_subscription_id, ...rest } = b;
   return { ...rest, wa_token_set: !!wa_token || !!process.env.WHATSAPP_TOKEN, hours: JSON.parse(b.hours || "{}") };
 }
 
@@ -77,8 +78,21 @@ api.post("/auth/register", (req, res) => {
     f.name ?? "",
     Number(b.lastInsertRowid),
   );
+  startTrial(Number(b.lastInsertRowid));
   createSession(res, Number(u.lastInsertRowid));
   res.json({ ok: true });
+});
+
+// Offerta pubblica (prezzi mostrati nella landing)
+api.get("/offer", (_req, res) => {
+  res.json({
+    monthly_eur: PLAN.monthlyEur,
+    yearly_eur: PLAN.yearlyEur,
+    plan_credits: PLAN.credits,
+    trial_days: PLAN.trialDays,
+    pack_eur: PLAN.packEur,
+    pack_credits: PLAN.packCredits,
+  });
 });
 
 api.post("/auth/login", (req, res) => {
@@ -153,7 +167,8 @@ api.use(requireAuth);
 
 api.get("/me", (req, res) => {
   const user = one("SELECT id, email, name FROM users WHERE id = ?", (req as AuthedRequest).userId);
-  res.json({ user, business: publicBusiness(getBusiness(bid(req))) });
+  const b = getBusiness(bid(req));
+  res.json({ user, business: publicBusiness(b), billing: billingSummary(b) });
 });
 
 api.put("/business", (req, res) => {
@@ -395,4 +410,19 @@ api.get("/followups", (req, res) => {
 });
 api.post("/followups/run", async (req, res) => {
   res.json(await runFollowups(bid(req), true));
+});
+
+// Piano e crediti
+api.get("/billing", (req, res) => {
+  res.json(billingSummary(getBusiness(bid(req))));
+});
+api.post("/billing/checkout", async (req, res) => {
+  const kind = z.enum(["monthly", "yearly", "pack"]).parse(req.body?.kind);
+  const user = one<{ email: string }>("SELECT email FROM users WHERE id = ?", (req as AuthedRequest).userId)!;
+  const origin = `${req.protocol}://${req.get("host")}`;
+  res.json({ url: await createCheckout(getBusiness(bid(req)), kind, origin, user.email) });
+});
+api.post("/billing/portal", async (req, res) => {
+  const origin = `${req.protocol}://${req.get("host")}`;
+  res.json({ url: await createPortal(getBusiness(bid(req)), origin) });
 });
