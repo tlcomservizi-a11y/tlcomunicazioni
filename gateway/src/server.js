@@ -23,7 +23,7 @@ if (!PANEL_PASSWORD || PANEL_PASSWORD.length < 10) throw Error("Imposta PANEL_PA
 if (!GATEWAY_SECRET) throw Error("Imposta GATEWAY_SECRET (lo stesso valore di TL_GATEWAY_SECRET in Partner Hub)");
 
 const logger = pino({ level: env("LOG_LEVEL", "warn") });
-const state = { status: "avvio", qr: "", me: "", since: new Date().toISOString(), lastError: "", handled: 0, replied: 0 };
+const state = { status: "avvio", qr: "", me: "", since: new Date().toISOString(), lastError: "", handled: 0, replied: 0, received: 0, ignored: 0, errors: 0, lastEvent: "" };
 const ownSentIds = new Set();
 const jidByPhone = new Map(); // per rispondere sulla stessa chat (anche quelle con identificativo @lid)
 const allow = makeLimiter();
@@ -55,16 +55,21 @@ async function reply(to, text) {
   state.replied++;
 }
 
+const hhmm = () => new Date().toLocaleTimeString("it-IT");
 async function onMessage(msg) {
+  state.received++;
   const payload = toPayload(msg, ownSentIds);
-  if (!payload) return;
+  if (!payload) { state.ignored++; console.log(`[${hhmm()}] messaggio ignorato (gruppo, stato, sistema o risposta del ponte)`); return; }
   const v = payload.entry[0].changes[0].value;
   const phone = v.messages?.[0]?.from || v.message_echoes?.[0]?.to;
   if (phone) jidByPhone.set(phone, msg.key.remoteJid);
+  const kind = v.messages ? "dal cliente" : "scritto da te sul telefono";
   const res = await forward(payload);
   state.handled++;
+  state.lastEvent = `${hhmm()} messaggio ${kind} inoltrato a Partner Hub`;
+  console.log(`[${hhmm()}] messaggio ${kind} inoltrato a Partner Hub, risposte da inviare: ${(res?.replies || []).length}`);
   for (const r of res?.replies || []) {
-    if (r?.to && r?.text && digits(r.to) === phone) await reply(phone, String(r.text).slice(0, 1500));
+    if (r?.to && r?.text && digits(r.to) === digits(phone)) await reply(phone, String(r.text).slice(0, 1500));
   }
 }
 
@@ -105,7 +110,7 @@ async function start() {
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return; // ignora la cronologia sincronizzata al collegamento
     for (const m of messages) {
-      try { await onMessage(m); } catch (e) { state.lastError = e.message; logger.error({ err: e.message }, "messaggio non gestito"); }
+      try { await onMessage(m); } catch (e) { state.errors++; state.lastError = `${hhmm()} ${e.message}`; console.log(`[${hhmm()}] ERRORE nell'inoltro a Partner Hub: ${e.message}`); }
     }
   });
 }
@@ -130,7 +135,7 @@ ol{text-align:left;font-size:14px;line-height:1.6}button{border:0;border-radius:
 </style></head><body><div class="card"><h1>Ponte WhatsApp</h1><small>TL Comunicazioni – Connessi al valore</small><div id="c">Caricamento…</div></div>
 <script>
 async function load(){const s=await (await fetch('/stato')).json();const c=document.getElementById('c');
-if(s.status==='collegato'){c.innerHTML='<div class="st ok">Collegato</div><p>Numero: <b>+'+s.me+'</b><br>Messaggi gestiti: '+s.handled+' · risposte inviate: '+s.replied+'</p><button onclick="if(confirm(\\'Scollegare WhatsApp dal ponte?\\'))fetch(\\'/scollega\\',{method:\\'POST\\'}).then(load)">Scollega</button>';}
+if(s.status==='collegato'){c.innerHTML='<div class="st ok">Collegato</div><p>Numero: <b>+'+s.me+'</b><br>Messaggi ricevuti: '+s.received+' · inoltrati: '+s.handled+' · ignorati: '+s.ignored+' · errori: '+s.errors+'<br>Risposte inviate: '+s.replied+'</p>'+(s.lastEvent?'<p><small>Ultimo: '+s.lastEvent+'</small></p>':'')+(s.lastError?'<p style="color:#8a1f1f"><small>Ultimo errore: '+s.lastError+'</small></p>':'')+'<p><button onclick="if(confirm(\\'Scollegare WhatsApp dal ponte?\\'))fetch(\\'/scollega\\',{method:\\'POST\\'}).then(load)">Scollega</button>';}
 else if(s.qr){c.innerHTML='<div class="st wait">Da collegare</div><img alt="QR code" src="'+s.qr+'"><ol><li>Apri WhatsApp Business sul telefono</li><li>Menu ⋮ → <b>Dispositivi collegati</b> → <b>Collega un dispositivo</b></li><li>Inquadra questo QR</li></ol>';}
 else{c.innerHTML='<div class="st ko">'+s.status+'</div><p>'+(s.lastError||'Attendo il QR…')+'</p>';}}
 load();setInterval(load,4000);

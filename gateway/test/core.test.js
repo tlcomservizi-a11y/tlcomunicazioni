@@ -6,7 +6,7 @@ test("numero della chat: privati sì, gruppi e stati no", () => {
   assert.equal(phoneOf({ remoteJid: "393331234567@s.whatsapp.net" }), "393331234567");
   assert.equal(phoneOf({ remoteJid: "393331234567:12@s.whatsapp.net" }), "393331234567");
   assert.equal(phoneOf({ remoteJid: "123456789@lid", senderPn: "393331234567@s.whatsapp.net" }), "393331234567");
-  assert.equal(phoneOf({ remoteJid: "123456789@lid" }), "");
+  assert.equal(phoneOf({ remoteJid: "123456789@lid" }), "lid-123456789");
   assert.equal(phoneOf({ remoteJid: "120363000000@g.us" }), "");
   assert.equal(phoneOf({ remoteJid: "status@broadcast" }), "");
 });

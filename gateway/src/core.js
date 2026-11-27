@@ -13,7 +13,10 @@ export function phoneOf(key = {}) {
   if (USER.test(jid)) return digits(jid.split("@")[0].split(":")[0]);
   if (LID.test(jid)) {
     const alt = key.senderPn || key.remoteJidAlt || "";
-    return USER.test(alt) ? digits(alt.split("@")[0].split(":")[0]) : "";
+    if (USER.test(alt)) return digits(alt.split("@")[0].split(":")[0]);
+    // WhatsApp a volte nasconde il numero dietro un codice interno (@lid): la chat resta gestibile con quel codice.
+    const lid = digits(jid.split("@")[0].split(":")[0]);
+    return lid ? `lid-${lid}` : "";
   }
   return ""; // gruppi, stati, canali, liste broadcast: ignorati
 }
