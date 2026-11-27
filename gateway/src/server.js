@@ -12,7 +12,7 @@ import pino from "pino";
 import makeWASocket, { normalizeMessageContent, Browsers, DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState } from "baileys";
 import { classify, makeLimiter, typingDelay, digits } from "./core.js";
 
-const VERSIONE = "5";
+const VERSIONE = "6";
 const env = (k, d = "") => process.env[k] || d;
 const PORT = Number(env("PORT", "3100"));
 const PANEL_PASSWORD = env("PANEL_PASSWORD");
@@ -74,7 +74,23 @@ async function onMessage(msg) {
   const v = payload.entry[0].changes[0].value;
   const phone = v.messages?.[0]?.from || v.message_echoes?.[0]?.to;
   if (phone) jidByPhone.set(phone, msg.key.remoteJid);
-  const kind = v.messages ? "dal cliente" : "scritto da te sul telefono";
+  if (v.message_echoes) { await send(payload, phone, "scritto da te sul telefono"); return; }
+  // Messaggi del cliente: si aspetta qualche secondo di silenzio, così più messaggi di fila ricevono una risposta sola.
+  const b = buffers.get(phone) || { messages: [], contacts: v.contacts || [], timer: null };
+  b.messages.push(...v.messages);
+  clearTimeout(b.timer);
+  b.timer = setTimeout(() => {
+    buffers.delete(phone);
+    const batch = { entry: [{ changes: [{ field: "messages", value: { contacts: b.contacts, messages: b.messages } }] }] };
+    send(batch, phone, b.messages.length > 1 ? `dal cliente (${b.messages.length} messaggi)` : "dal cliente")
+      .catch((e) => { state.errors++; state.lastError = `${hhmm()} ${e.message}`; console.log(`[${hhmm()}] ERRORE nell'inoltro a Partner Hub: ${e.message}`); });
+  }, PAUSE_MS);
+  buffers.set(phone, b);
+}
+
+const PAUSE_MS = 6000;
+const buffers = new Map();
+async function send(payload, phone, kind) {
   const res = await forward(payload);
   state.handled++;
   state.lastEvent = `${hhmm()} messaggio ${kind} inoltrato a Partner Hub`;
