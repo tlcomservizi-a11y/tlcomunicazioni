@@ -1,0 +1,15 @@
+PONTE WHATSAPP TL COMUNICAZIONI - installazione sul PC del negozio
+
+1. Installa Node.js versione LTS da https://nodejs.org (avanti, avanti, fine).
+2. Scompatta questa cartella in un posto fisso, per esempio C:\PonteWhatsApp
+3. Doppio clic su avvia-ponte.bat (la prima volta impiega un minuto).
+   Si apre il browser su http://localhost:3100: nome utente qualsiasi,
+   password = riga PANEL_PASSWORD del file .env (aprilo con il Blocco note).
+4. Sul telefono: WhatsApp Business > menu > Dispositivi collegati >
+   Collega un dispositivo, e inquadra il QR. Il pannello diventa "Collegato".
+5. Doppio clic su avvio-automatico.bat: il ponte ripartira' da solo a ogni accensione.
+6. Impostazioni di Windows > Sistema > Alimentazione: sospensione "Mai".
+
+Non chiudere la finestra nera del ponte (puoi ridurla a icona).
+Il file .env contiene password e segreto: non condividerlo.
+Su Mac: doppio clic su avvia-ponte.command al posto del file .bat.
