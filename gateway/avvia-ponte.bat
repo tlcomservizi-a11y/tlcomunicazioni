@@ -6,7 +6,7 @@ if /i not "%~1"=="run" (
 )
 cd /d "%~dp0"
 echo ============================================
-echo   PONTE WHATSAPP TL COMUNICAZIONI - versione 4
+echo   PONTE WHATSAPP TL COMUNICAZIONI - versione 5
 echo ============================================
 echo Cartella: %CD%
 if not exist "src\server.js" (

@@ -9,10 +9,10 @@ import path from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import QRCode from "qrcode";
 import pino from "pino";
-import makeWASocket, { Browsers, DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState } from "baileys";
-import { toPayload, makeLimiter, typingDelay, digits } from "./core.js";
+import makeWASocket, { normalizeMessageContent, Browsers, DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState } from "baileys";
+import { classify, makeLimiter, typingDelay, digits } from "./core.js";
 
-const VERSIONE = "4";
+const VERSIONE = "5";
 const env = (k, d = "") => process.env[k] || d;
 const PORT = Number(env("PORT", "3100"));
 const PANEL_PASSWORD = env("PANEL_PASSWORD");
@@ -24,7 +24,7 @@ if (!PANEL_PASSWORD || PANEL_PASSWORD.length < 10) throw Error("Imposta PANEL_PA
 if (!GATEWAY_SECRET) throw Error("Imposta GATEWAY_SECRET (lo stesso valore di TL_GATEWAY_SECRET in Partner Hub)");
 
 const logger = pino({ level: env("LOG_LEVEL", "fatal") }); // la finestra mostra solo le righe del ponte
-const state = { status: "avvio", qr: "", me: "", since: new Date().toISOString(), lastError: "", handled: 0, replied: 0, received: 0, ignored: 0, errors: 0, lastEvent: "" };
+const state = { status: "avvio", qr: "", me: "", since: new Date().toISOString(), lastError: "", handled: 0, replied: 0, received: 0, ignored: 0, errors: 0, lastEvent: "", lastIgnored: "" };
 const ownSentIds = new Set();
 const jidByPhone = new Map(); // per rispondere sulla stessa chat (anche quelle con identificativo @lid)
 const allow = makeLimiter();
@@ -64,8 +64,13 @@ async function onMessage(msg) {
   if (/@lid$/.test(k.remoteJid || "") && !k.remoteJidAlt && !k.senderPn) {
     try { const pn = await sock.signalRepository?.lidMapping?.getPNForLID(k.remoteJid); if (pn) k.remoteJidAlt = pn; } catch {}
   }
-  const payload = toPayload(msg, ownSentIds);
-  if (!payload) { state.ignored++; console.log(`[${hhmm()}] messaggio ignorato (gruppo, stato, sistema o risposta del ponte)`); return; }
+  try { msg.message = normalizeMessageContent(msg.message) || msg.message; } catch {}
+  const { payload, reason } = classify(msg, ownSentIds);
+  if (!payload) {
+    state.ignored++; state.lastIgnored = `${hhmm()} ${reason}`;
+    console.log(`[${hhmm()}] messaggio ignorato: ${reason}`);
+    return;
+  }
   const v = payload.entry[0].changes[0].value;
   const phone = v.messages?.[0]?.from || v.message_echoes?.[0]?.to;
   if (phone) jidByPhone.set(phone, msg.key.remoteJid);
@@ -148,7 +153,7 @@ ol{text-align:left;font-size:14px;line-height:1.6}button{border:0;border-radius:
 </style></head><body><div class="card"><h1>Ponte WhatsApp</h1><small>TL Comunicazioni – Connessi al valore · versione ${VERSIONE}</small><div id="c">Caricamento…</div></div>
 <script>
 async function load(){const s=await (await fetch('/stato')).json();const c=document.getElementById('c');
-if(s.status==='collegato'){c.innerHTML='<div class="st ok">Collegato</div><p>Numero: <b>+'+s.me+'</b><br>Messaggi ricevuti: '+s.received+' · inoltrati: '+s.handled+' · ignorati: '+s.ignored+' · errori: '+s.errors+'<br>Risposte inviate: '+s.replied+'</p>'+(s.lastEvent?'<p><small>Ultimo: '+s.lastEvent+'</small></p>':'')+(s.lastError?'<p style="color:#8a1f1f"><small>Ultimo errore: '+s.lastError+'</small></p>':'')+'<p><button onclick="if(confirm(\\'Scollegare WhatsApp dal ponte?\\'))fetch(\\'/scollega\\',{method:\\'POST\\'}).then(load)">Scollega</button>';}
+if(s.status==='collegato'){c.innerHTML='<div class="st ok">Collegato</div><p>Numero: <b>+'+s.me+'</b><br>Messaggi ricevuti: '+s.received+' · inoltrati: '+s.handled+' · ignorati: '+s.ignored+' · errori: '+s.errors+'<br>Risposte inviate: '+s.replied+'</p>'+(s.lastEvent?'<p><small>Ultimo inoltrato: '+s.lastEvent+'</small></p>':'')+(s.lastIgnored?'<p><small>Ultimo ignorato: '+s.lastIgnored+'</small></p>':'')+(s.lastError?'<p style="color:#8a1f1f"><small>Ultimo errore: '+s.lastError+'</small></p>':'')+'<p><button onclick="if(confirm(\\'Scollegare WhatsApp dal ponte?\\'))fetch(\\'/scollega\\',{method:\\'POST\\'}).then(load)">Scollega</button>';}
 else if(s.qr){c.innerHTML='<div class="st wait">Da collegare</div><img alt="QR code" src="'+s.qr+'"><ol><li>Apri WhatsApp Business sul telefono</li><li>Menu ⋮ → <b>Dispositivi collegati</b> → <b>Collega un dispositivo</b></li><li>Inquadra questo QR</li></ol>';}
 else{c.innerHTML='<div class="st ko">'+s.status+'</div><p>'+(s.lastError||'Attendo il QR…')+'</p>';}}
 load();setInterval(load,4000);

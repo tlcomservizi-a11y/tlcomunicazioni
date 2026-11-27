@@ -4,8 +4,8 @@
 
 export const digits = (s) => String(s || "").replace(/\D/g, "");
 
-const USER = /@s\.whatsapp\.net$/;
-const LID = /@lid$/;
+const USER = /@(s\.whatsapp\.net|c\.us|hosted)$/; // numeri di telefono (anche account "hosted")
+const LID = /@(lid|hosted\.lid)$/;               // identificativi interni che nascondono il numero
 
 /** Numero di telefono (solo cifre) della chat, o "" se non è una chat privata con un numero noto. */
 export function phoneOf(key = {}) {
@@ -51,21 +51,31 @@ const tsOf = (t) => {
  * Ritorna null se il messaggio va ignorato.
  */
 export function toPayload(msg, ownSentIds = new Set()) {
+  return classify(msg, ownSentIds).payload || null;
+}
+
+/** Come toPayload, ma quando il messaggio va ignorato dice anche il perché (per il pannello). */
+export function classify(msg, ownSentIds = new Set()) {
   const key = msg?.key || {};
-  if (!key.id || ownSentIds.has(key.id)) return null; // risposte inviate dal ponte stesso
+  if (!key.id) return { reason: "messaggio senza identificativo" };
+  if (ownSentIds.has(key.id)) return { reason: "risposta inviata dal ponte" };
+  const jid = String(key.remoteJid || "");
   const phone = phoneOf(key);
-  if (!phone) return null;
+  if (!phone) {
+    const kind = /@g\.us$/.test(jid) ? "gruppo" : jid === "status@broadcast" ? "stato" : /@newsletter$/.test(jid) ? "canale" : /@broadcast$/.test(jid) ? "lista broadcast" : `chat non riconosciuta (${jid.split("@")[1] || "vuota"})`;
+    return { reason: kind };
+  }
   const c = contentOf(msg.message);
-  if (!c) return null;
+  if (!c) return { reason: `contenuto non gestito (${Object.keys(msg.message || {}).join(", ") || "vuoto"})` };
   const body = c.type === "text" ? { text: { body: c.text.slice(0, 4000) } } : {};
   const timestamp = tsOf(msg.messageTimestamp);
   if (key.fromMe) {
-    return { entry: [{ changes: [{ field: "smb_message_echoes", value: { message_echoes: [{ id: key.id, to: phone, timestamp, type: c.type, ...body }] } }] }] };
+    return { payload: { entry: [{ changes: [{ field: "smb_message_echoes", value: { message_echoes: [{ id: key.id, to: phone, timestamp, type: c.type, ...body }] } }] }] } };
   }
-  return { entry: [{ changes: [{ field: "messages", value: {
+  return { payload: { entry: [{ changes: [{ field: "messages", value: {
     contacts: [{ wa_id: phone, profile: { name: String(msg.pushName || "").slice(0, 120) } }],
     messages: [{ id: key.id, from: phone, timestamp, type: c.type, ...body }],
-  } }] }] };
+  } }] }] } };
 }
 
 /**

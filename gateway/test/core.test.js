@@ -57,3 +57,12 @@ test("attesa prima di rispondere tra 2 e 9 secondi", () => {
   assert.equal(typingDelay("", 0), 2000);
   assert.ok(typingDelay("x".repeat(1000), 0.99) <= 9000);
 });
+
+test("motivo dello scarto e account hosted", async () => {
+  const { classify } = await import("../src/core.js");
+  assert.equal(classify({ key: { id: "1", remoteJid: "1203@g.us" }, message: { conversation: "x" } }).reason, "gruppo");
+  assert.equal(classify({ key: { id: "2", remoteJid: "status@broadcast" }, message: { conversation: "x" } }).reason, "stato");
+  assert.match(classify({ key: { id: "3", remoteJid: "393331234567@s.whatsapp.net" }, message: { reactionMessage: {} } }).reason, /reactionMessage/);
+  assert.ok(classify({ key: { id: "4", remoteJid: "393331234567@hosted" }, message: { conversation: "ciao" } }).payload);
+  assert.ok(classify({ key: { id: "5", remoteJid: "123@hosted.lid" }, message: { conversation: "ciao" } }).payload);
+});
