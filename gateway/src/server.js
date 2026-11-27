@@ -12,6 +12,7 @@ import pino from "pino";
 import makeWASocket, { Browsers, DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState } from "baileys";
 import { toPayload, makeLimiter, typingDelay, digits } from "./core.js";
 
+const VERSIONE = "3";
 const env = (k, d = "") => process.env[k] || d;
 const PORT = Number(env("PORT", "3100"));
 const PANEL_PASSWORD = env("PANEL_PASSWORD");
@@ -132,7 +133,7 @@ h1{font-size:20px;margin:0 0 4px}small{color:#5b7170}img{width:280px;height:280p
 .st{display:inline-block;padding:6px 12px;border-radius:99px;font-weight:600;margin:12px 0}
 .ok{background:#d9f5e3;color:#11643a}.wait{background:#fff1cc;color:#7a5200}.ko{background:#fde0e0;color:#8a1f1f}
 ol{text-align:left;font-size:14px;line-height:1.6}button{border:0;border-radius:10px;padding:10px 16px;background:#8a1f1f;color:#fff;font-weight:600;cursor:pointer}
-</style></head><body><div class="card"><h1>Ponte WhatsApp</h1><small>TL Comunicazioni – Connessi al valore</small><div id="c">Caricamento…</div></div>
+</style></head><body><div class="card"><h1>Ponte WhatsApp</h1><small>TL Comunicazioni – Connessi al valore · versione ${VERSIONE}</small><div id="c">Caricamento…</div></div>
 <script>
 async function load(){const s=await (await fetch('/stato')).json();const c=document.getElementById('c');
 if(s.status==='collegato'){c.innerHTML='<div class="st ok">Collegato</div><p>Numero: <b>+'+s.me+'</b><br>Messaggi ricevuti: '+s.received+' · inoltrati: '+s.handled+' · ignorati: '+s.ignored+' · errori: '+s.errors+'<br>Risposte inviate: '+s.replied+'</p>'+(s.lastEvent?'<p><small>Ultimo: '+s.lastEvent+'</small></p>':'')+(s.lastError?'<p style="color:#8a1f1f"><small>Ultimo errore: '+s.lastError+'</small></p>':'')+'<p><button onclick="if(confirm(\\'Scollegare WhatsApp dal ponte?\\'))fetch(\\'/scollega\\',{method:\\'POST\\'}).then(load)">Scollega</button>';}
@@ -152,6 +153,6 @@ http.createServer(async (req, res) => {
     res.writeHead(200).end("ok"); return;
   }
   res.writeHead(404).end("Non trovato");
-}).listen(PORT, () => console.log(`Pannello del ponte su http://localhost:${PORT}`));
+}).listen(PORT, () => console.log(`Ponte WhatsApp versione ${VERSIONE} - pannello su http://localhost:${PORT}`));
 
 start().catch((e) => { state.status = "errore"; state.lastError = e.message; console.error(e); });

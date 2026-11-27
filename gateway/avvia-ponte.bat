@@ -6,7 +6,7 @@ if /i not "%~1"=="run" (
 )
 cd /d "%~dp0"
 echo ============================================
-echo   PONTE WHATSAPP TL COMUNICAZIONI
+echo   PONTE WHATSAPP TL COMUNICAZIONI - versione 3
 echo ============================================
 echo Cartella: %CD%
 if not exist "src\server.js" (
@@ -39,6 +39,8 @@ if not exist "node_modules\baileys" (
   echo Prima installazione delle librerie, attendi...
   call npm ci --omit=dev
 )
+echo Chiudo eventuali copie vecchie del ponte...
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":3100 " ^| findstr LISTENING') do taskkill /PID %%p /F >nul 2>nul
 echo.
 echo Avvio del ponte. Pannello: http://localhost:3100
 echo NON chiudere questa finestra (puoi ridurla a icona).
